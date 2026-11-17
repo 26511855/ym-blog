@@ -355,6 +355,42 @@ check('新密码可登录', resp.status === 200);
   const imp = (await resp.json()).data;
   check('整站导入（先自动备份+对账报告）', resp.status === 200 && imp?.report && typeof imp.report.inserted === 'object');
 
+  // 【审计修复 2026-11-17】redirects 导入恢复：登记一条跳转 → 导出 → 删行 → 导入 → 条数恢复
+  db.prepare('INSERT OR REPLACE INTO redirects (old_slug, post_id, created_at) VALUES (?, ?, ?)').run('smoke-old-slug', postId, 1700000000);
+  resp = await req('GET', '/api/admin/export/full.json');
+  const exp2 = await resp.json();
+  const expTables = exp2.data?.tables || exp2.tables || {};
+  check('【审计修复】导出包含 redirects 行', (expTables.redirects || []).some((r) => r.old_slug === 'smoke-old-slug'));
+  db.prepare("DELETE FROM redirects WHERE old_slug = 'smoke-old-slug'").run();
+  resp = await req('POST', '/api/admin/import', { body: { confirm: true, data: exp2 }, ...H });
+  const rdCnt = db.prepare("SELECT COUNT(*) AS n FROM redirects WHERE old_slug = 'smoke-old-slug'").get().n;
+  check('【审计修复】导入恢复 redirects（导出→删除→导入）', resp.status === 200 && rdCnt === 1, `cnt=${rdCnt}`);
+
+  // 【审计修复】预览链接：生成 → 可访问 → 撤销 → 404
+  resp = await req('POST', '/api/admin/posts', { body: { title: '预览撤销测试稿', content_md: '草稿内容。' }, ...H });
+  const draftPost = (await resp.json()).data?.post;
+  resp = await req('POST', `/api/admin/posts/${draftPost.id}/preview-token`, { body: {}, ...H });
+  const pv = (await resp.json()).data;
+  resp = await req('GET', pv.url, { useCookie: false });
+  check('【审计修复】预览链接生成后可访问', resp.status === 200, `status=${resp.status}`);
+  resp = await req('DELETE', `/api/admin/posts/${draftPost.id}/preview-token`, { ...H });
+  check('【审计修复】撤销预览链接接口', resp.status === 200 && (await resp.json()).data?.revoked >= 1);
+  resp = await req('GET', pv.url, { useCookie: false });
+  check('【审计修复】撤销后预览链接 404', resp.status === 404, `status=${resp.status}`);
+
+  // 【审计修复】草稿态改内容后 rendered_html 同步重渲染（渲染与状态解耦）
+  resp = await req('PUT', `/api/admin/posts/${draftPost.id}`, { body: { content_md: '## 全新小标题\n\n新内容。' }, ...H });
+  const updPost = (await resp.json()).data?.post;
+  check('【审计修复】草稿改内容后 HTML 同步重渲染', !!updPost && (updPost.rendered_html || '').includes('全新小标题'), (updPost?.rendered_html || '').slice(0, 60));
+
+  // 【审计修复】评论管理校验：不存在的评论/文章不再静默 ok
+  resp = await req('POST', '/api/admin/comments/99999999/approve', { body: {}, ...H });
+  check('【审计修复】审核不存在的评论回 404', resp.status === 404, `status=${resp.status}`);
+  resp = await req('DELETE', '/api/admin/comments/99999999', { ...H });
+  check('【审计修复】删除不存在的评论回 404', resp.status === 404, `status=${resp.status}`);
+  resp = await req('POST', '/api/admin/comments', { body: { post_id: 99999999, content: '回复测试' }, ...H });
+  check('【审计修复】回复不存在的文章回 404', resp.status === 404, `status=${resp.status}`);
+
   // 手动备份
   resp = await req('POST', '/api/admin/backup/run', { body: {}, ...H });
   check('手动触发备份', resp.status === 200 && !!(await resp.json()).data?.backup?.r2_key);

@@ -157,10 +157,13 @@ export async function generateRecoveryCodes(env, userId) {
   return codes;
 }
 // 校验并消费一个恢复码；返回 true 表示命中（调用方负责随后改密+吊销会话）
+// 原子消费（2026-11-17 审计核验 #3）：UPDATE 带 used_at IS NULL 条件并检查
+// changes——旧版先 SELECT 再无条件 UPDATE，并发下两个请求能同时选中同一枚
+// 未用码、都返回 true 把同一码消费两次。抢不到（changes=0）即失败。
 export async function consumeRecoveryCode(env, userId, code) {
   const h = await hashSecret(env, String(code || '').trim().toLowerCase());
   const row = await first(env, 'SELECT id FROM recovery_codes WHERE user_id = ? AND code_hash = ? AND used_at IS NULL', userId, h);
   if (!row) return false;
-  await run(env, 'UPDATE recovery_codes SET used_at = ? WHERE id = ?', nowSec(), row.id);
-  return true;
+  const r = await run(env, 'UPDATE recovery_codes SET used_at = ? WHERE id = ? AND used_at IS NULL', nowSec(), row.id);
+  return !!(r && r.meta && r.meta.changes);
 }

@@ -66,7 +66,9 @@ async function applyPostWrite(env, post, body, { isNew = false } = {}) {
     }
   }
   const rendered = renderMarkdown(md);
-  const doRender = ['published', 'scheduled', 'private'].includes(body.status || post.status);
+  // 渲染与状态解耦（2026-11-17 审计核验 #7）：rendered_html 永远跟随当前 Markdown，
+  // 状态只管可见性。旧版只对 published/scheduled/private 重渲染——草稿态恢复历史
+  // 版本时只换了 md、HTML 还是旧的，草稿预览会看到过期内容（发布时才自愈）。
   // 摘要：手动填的优先（站长自己写的简介，公开无妨）；自动摘要在文章
   // 带密码时必须留空——它是从正文截的字，存下来会被列表/搜索/RSS
   // 原样送出去（2026-11-13 三方审查 B#1）。密码状态先算（下方才赋值的
@@ -95,7 +97,7 @@ async function applyPostWrite(env, post, body, { isNew = false } = {}) {
   if (status === 'published' && publishAt && publishAt > t) publishAt = t;
   await run(env, `UPDATE posts SET slug=?, title=?, content_md=?, rendered_html=?, excerpt=?, cover_media_id=?,
     status=?, publish_at=?, password_hash=?, is_sticky=?, comment_enabled=?, word_count=?, trashed_at=?, updated_at=? WHERE id=?`,
-    slug, title, md, doRender ? rendered.html : post.rendered_html, excerpt, coverId,
+    slug, title, md, rendered.html, excerpt, coverId,
     status, publishAt, passwordHash,
     body.is_sticky !== undefined ? (body.is_sticky ? 1 : 0) : post.is_sticky,
     body.comment_enabled !== undefined ? (body.comment_enabled ? 1 : 0) : post.comment_enabled,
@@ -298,6 +300,13 @@ export async function handleAdminApi(env, request, method, path, url) {
         id, await hashSecret(env, tokenPlain), expires, nowSec());
       return json({ url: `/preview/${id}?key=${tokenPlain}`, expires_at: expires });
     }
+    if (method === 'DELETE' && sub === '/preview-token') {
+      // 撤销这篇文章的全部未撤销预览令牌（2026-11-17 审计核验 #5）：revoked 字段
+      // 此前只有读、没有写——README 宣称「可撤销」却没有功能闭环，链接泄漏后只能
+      // 等 7 天过期。校验侧（pages.js）本来就看 revoked，置 1 即刻失效。
+      const r = await run(env, 'UPDATE preview_tokens SET revoked = 1 WHERE post_id = ? AND revoked = 0', id);
+      return json({ ok: true, revoked: r.meta.changes });
+    }
   }
 
   // ---- 媒体 ----
@@ -431,17 +440,30 @@ export async function handleAdminApi(env, request, method, path, url) {
   if (method === 'POST' && cmtMatch) {
     const map = { approve: 'approved', reject: 'trash', spam: 'spam' };
     const target = map[cmtMatch[2]];
-    await run(env, 'UPDATE comments SET status = ? WHERE id = ?', target, Number(cmtMatch[1]));
+    const cid = Number(cmtMatch[1]);
+    // 存在/状态/归属校验（2026-11-17 审计核验 #8）：旧版对不存在的 ID 也无条件
+    // 回 ok:true、任意状态间直接改。现先查评论存在，再校验状态流转（已在目标
+    // 状态不重复操作），UPDATE 带旧状态条件并按 changes 回结果。
+    const cmt = await first(env, 'SELECT id, status FROM comments WHERE id = ?', cid);
+    if (!cmt) throw notFound('评论不存在');
+    if (cmt.status === target) throw badRequest('评论已经是该状态了');
+    const r = await run(env, 'UPDATE comments SET status = ? WHERE id = ? AND status = ?', target, cid, cmt.status);
+    if (!r.meta.changes) throw badRequest('评论状态刚被改动，请刷新');
     // 进回收站/垃圾箱落 trashed_at（迁移 0005），purge 按它算 30 天保留期；
     // 恢复通过则清空。生产库还没跑 0005 时这一句会失败——吞掉，不挡审核。
     await run(env, 'UPDATE comments SET trashed_at = ? WHERE id = ?',
-      target === 'approved' ? null : nowSec(), Number(cmtMatch[1])).catch(() => {});
+      target === 'approved' ? null : nowSec(), cid).catch(() => {});
     return json({ ok: true });
   }
   const cmtDel = path.match(/^\/api\/admin\/comments\/(\d+)$/);
   if (method === 'DELETE' && cmtDel) {
-    await run(env, "UPDATE comments SET status='trash' WHERE id = ?", Number(cmtDel[1]));
-    await run(env, 'UPDATE comments SET trashed_at = ? WHERE id = ?', nowSec(), Number(cmtDel[1])).catch(() => {});
+    const cid = Number(cmtDel[1]);
+    const cmt = await first(env, 'SELECT id, status FROM comments WHERE id = ?', cid);
+    if (!cmt) throw notFound('评论不存在');
+    if (cmt.status === 'trash') throw badRequest('评论已经在回收站了');
+    const r = await run(env, "UPDATE comments SET status='trash' WHERE id = ? AND status != 'trash'", cid);
+    if (!r.meta.changes) throw badRequest('评论状态刚被改动，请刷新');
+    await run(env, 'UPDATE comments SET trashed_at = ? WHERE id = ?', nowSec(), cid).catch(() => {});
     return json({ ok: true });
   }
   if (method === 'POST' && path === '/api/admin/comments') {
@@ -451,10 +473,22 @@ export async function handleAdminApi(env, request, method, path, url) {
     const postId = Number(body.post_id);
     const content = String(body.content || '').trim();
     if (!postId || !content) throw badRequest('内容不完整');
+    // 归属校验（审计核验 #8）：旧版连文章是否存在都没查，父评论也不验归属，
+    // 回复能挂到不相干的文章/评论上。与访客提交口径对齐：文章须存在、未进
+    // 回收站、评论开关打开；父评论必须属于同一篇文章。
+    const post = await first(env, 'SELECT id, status, comment_enabled FROM posts WHERE id = ?', postId);
+    if (!post) throw notFound('文章不存在');
+    if (post.status === 'trash') throw badRequest('文章在回收站里，不能回复');
+    if (!post.comment_enabled) throw badRequest('这篇文章关闭了评论');
+    const parentId = Number(body.parent_id) || 0;
+    if (parentId) {
+      const parent = await first(env, 'SELECT id FROM comments WHERE id = ? AND post_id = ?', parentId, postId);
+      if (!parent) throw badRequest('父评论不存在或不属于这篇文章');
+    }
     const settings = await getSettings(env);
     const displayName = String(settings.author_nickname || '站长').slice(0, 30) || '站长';
     const r = await run(env, "INSERT INTO comments (post_id, parent_id, author_name, content, status, is_admin, created_at) VALUES (?, ?, ?, ?, 'approved', 1, ?)",
-      postId, Number(body.parent_id) || 0, displayName, content.slice(0, 2000), nowSec());
+      postId, parentId, displayName, content.slice(0, 2000), nowSec());
     return json({ id: r.meta.last_row_id });
   }
 

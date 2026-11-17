@@ -894,10 +894,11 @@ async function viewEditor(main, postId) {
       if (ED.dirty) await saveWith(collectBody(), '已先保存再生成预览链接');
       const r = await api('POST', `/api/admin/posts/${post.id}/preview-token`, {});
       const full = location.origin + r.url;
-      openModal('草稿预览链接', `<p class="hint">7 天内有效（到期 ${fmtTime(r.expires_at)}），发给朋友可直接看草稿，页面带 noindex 不被收录。</p>
+      openModal('草稿预览链接', `<p class="hint">7 天内有效（到期 ${fmtTime(r.expires_at)}），发给朋友可直接看草稿，页面带 noindex 不被收录。链接若泄漏，点「撤销全部预览链接」可让这篇文章此前发出的所有预览链接立刻失效。</p>
         <div class="codes" style="font-size:13px">${esc(full)}</div>`, [
         { label: '打开预览', onClick: () => { window.open(r.url, '_blank'); } },
         { label: '复制链接', cls: 'primary', onClick: async (close) => { try { await navigator.clipboard.writeText(full); toast('已复制'); } catch { toast('复制失败，请长按链接手动复制', true); } close(); } },
+        { label: '撤销全部预览链接', onClick: async (close) => { try { const rv = await api('DELETE', `/api/admin/posts/${post.id}/preview-token`); toast(`已撤销 ${rv.revoked || 0} 条预览链接`); } catch (e) { toast(e.message, true); } close(); } },
       ]);
     } catch (e) { toast(e.message, true); }
   });

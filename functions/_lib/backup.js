@@ -259,5 +259,16 @@ export async function importSite(env, data) {
     await run(env, 'INSERT INTO view_stats (post_id, day, pv) VALUES (?, ?, ?) ON CONFLICT(post_id, day) DO UPDATE SET pv = MAX(pv, excluded.pv)',
       pid, v.day, v.pv).catch(() => {});
   }
+  // 重定向恢复：EXPORT_TABLES 含 redirects、导出一直带着，旧版导入却从不写回——
+  // 改过 slug 的文章在整站恢复后旧链接全部 404，与「旧链接不断」的迁移承诺相悖
+  // （2026-11-17 审计核验 #6）。按 idMap 把 post_id 重映射后恢复；映射不到的
+  // （文章没导入进来）跳过；与文章导入时冲突改名新登记的跳转可能同 old_slug，
+  // insertRow 的 INSERT OR IGNORE 兜底。
+  for (const rd of T.redirects || []) {
+    const pid = idMap.get(rd.post_id);
+    if (!pid) continue;
+    await insertRow('redirects', { old_slug: rd.old_slug, post_id: pid, created_at: rd.created_at }, ['old_slug', 'post_id', 'created_at']);
+    report.inserted.redirects = (report.inserted.redirects || 0) + 1;
+  }
   return report;
 }
