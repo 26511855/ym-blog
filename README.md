@@ -2,7 +2,7 @@
 
 一个**带完整网页后台的真·动态博客**，全部跑在 Cloudflare 免费额度里：不用租服务器、不用数据库主机、不用备案。手机、平板、电脑打开后台就能写文章、传图、传视频、改站名和颜色，像用 App 一样点点点。适合个人小站，也按通用产品标准做了额度保护与防刷——别人拿去部署、人多了同样扛得住。
 
-![版本](https://img.shields.io/badge/版本-v1.2.3-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
+![版本](https://img.shields.io/badge/版本-v1.2.4-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
 
 **[下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
 
@@ -31,7 +31,8 @@
 | 部署方式 | 下载哪个文件 | 怎么用 |
 |---|---|---|
 | 方式一 · GitHub 连接自动部署（推荐） | 不用下文件 | 在 GitHub 上 Fork 本仓库，部署全程在网页里点，具体见「方式一」一节 |
-| 方式二 · 手机部署包 | 发行版（Releases）里的 `ym-blog-deploy-*.zip` | 在 Cloudflare 控制台的 Pages 里「上传资产」整包上传，新建项目即上线；同页的 `SHA256SUMS.txt` 是校验文件，用来核对 zip 有没有下完整、下对版 |
+| 方式二 · 手机部署包 | 发行版（Releases）里的 `ym-blog-worker-deploy-*.zip`（带 `-worker-` 的**直传专用包**） | 在 Cloudflare 控制台的 Pages 里「上传资产」整包上传，新建项目即上线；同页的 `SHA256SUMS.txt` 是校验文件，用来核对 zip 有没有下完整、下对版。**别下成不带 `-worker-` 的普通包直传**——普通包里的 `functions/` 文件夹拖拽上传不会被编译，本站全部页面都靠后端出，传了必然连首页都是 404（原因见方式二） |
+| （参考）普通部署包 | 发行版里的 `ym-blog-deploy-*.zip` | 是 `functions/` 结构的成品包，给 Git 连接 / wrangler 部署和仓库灾难恢复用，**不用于控制台直传** |
 | 方式三 · wrangler 命令行 | 本仓库源码（GitHub 页面点 Code → Download ZIP，或用 git 克隆） | 在电脑上解压，照「方式三」一节用命令行部署 |
 
 ⚠️ **注意**：发行版页面里 GitHub 自动生成的 **Source code（zip / tar.gz）是整个仓库的源码快照，不能直接当 Pages 部署包上传**（里面混着文档、脚本和测试文件，目录结构也不是部署根）。部署包请认准文件名带 `deploy` 的那个 zip。
@@ -484,7 +485,7 @@ A：多半不是部署的问题，而是数据库没跑 schema 或绑定没生�
 <details>
 <summary>点开看详细步骤</summary>
 
-1. 下包：打开本仓库的 **Releases** 页 → 点最新版 → 在附件（Assets）里下载 `ym-blog-deploy-*.zip`。⚠️ 别下成 GitHub 自动生成的 Source code（那是源码快照，不能当部署包，见「先选下载文件」的提醒）。有条件时用任意哈希工具算一下 zip 的 SHA-256，和 `SHA256SUMS.txt` 里那串对一下，一致才说明文件下完整了。
+1. 下包：打开本仓库的 **Releases** 页 → 点最新版 → 在附件（Assets）里下载 **`ym-blog-worker-deploy-*.zip`**（带 `-worker-` 的直传专用包）。⚠️ 别下成普通部署包、更别下成 GitHub 自动生成的 Source code：这是 CF 的平台规矩——控制台拖拽上传**不会编译 `functions/` 文件夹**，而本站的首页、文章页、后台接口全靠后端程序出，普通包直传上去必然连首页都是 404，不是偶发、重试也没用；直传包的后端已经合成进单个 `_worker.js`，这条路才走得通（解压核对：根目录应直接躺着 `_worker.js`、`_routes.json`、`admin/`、`assets/`，**没有 `functions/` 文件夹是对的**）。有条件时用任意哈希工具算一下 zip 的 SHA-256，和 `SHA256SUMS.txt` 里那串对一下，一致才说明文件下完整了。
 2. 打开 [dash.cloudflare.com](https://dash.cloudflare.com) → 左侧 **计算（Workers & Pages）** → **创建应用（Create）→ Pages → 上传资产（Upload assets）** → 项目名称填 `ym-blog` → 把 zip **整包**上传（不用解压）→ 点部署。
 做到这里你应该看到：部署成功，页面给出一个 `https://ym-blog.xxx.pages.dev` 的地址。
 3. 绑数据库和桶：点进这个项目 → **设置（Settings）→ 绑定（Bindings）** → 添加 D1 绑定：变量名填 `DB`、数据库选 `ym-blog-db`；再添加 R2 绑定：变量名 `MEDIA` 选 `ym-blog-media`，变量名 `BACKUPS` 选 `ym-blog-backups`。
@@ -501,8 +502,8 @@ A：多半不是部署的问题，而是数据库没跑 schema 或绑定没生�
 
 ###
 
-- **Q：首页能打开，但页面没样式、后台 `/admin` 是 404？**
-A：几乎可以肯定是下错了包——把 Source code 当部署包传了，或 zip 不完整。部署包的根目录里必须直接躺着 `_routes.json`、`admin/`、`assets/`、`functions/` 这些（这个文件清单就是路由命脉：少了 `_routes.json`，样式、脚本和后台页面会全部 404，详见「已知边界」最后一条）。重新下带 `deploy` 字样的 zip 再传。
+- **Q：首页是 404、或页面没样式、后台 `/admin` 打不开？**
+A：几乎可以肯定是**下错了包**——把普通部署包或 Source code 拿来直传了。CF 控制台拖拽上传不会编译 `functions/` 文件夹：本站全部页面都靠后端出，下错包时连首页都是 404；样式和后台能打开一半的情况，多半是包不完整或传漏了文件。直传只认带 `-worker-` 的直传专用包（根目录直接躺着 `_worker.js`、`_routes.json`、`admin/`、`assets/`），重新下对再传。（用 Git / wrangler 路线的人另查：`_routes.json` 是那条路的路由命脉，少了它样式、脚本和后台页面会全部 404，详见「已知边界」最后一条。）
 - **Q：绑定和变量都配了，站点还是报找不到数据库？**
 A：两个高频原因：① 绑定变量名写错，必须正好是 `DB`、`MEDIA`、`BACKUPS`，全大写；② 配完没重新部署——绑定和变量只对**新部署**生效，回部署页重试一次。
 - **Q：图片传不上去？**
@@ -912,6 +913,11 @@ A：后台文章列表里删除即可（进回收站，30 天内可还原）；�
 - 新增「全程要碰到的钥匙和编号」逐样五点说明（管理员密码、恢复码、备份加密口令、密码胡椒、任务密钥、R2 凭据、两枚令牌、两个 ID、人机验证密钥）；配置表的 GitHub Secrets 清单补上 `BACKUP_PASSPHRASE`（共 13 项）。
 - 新增探活、保活、自动更新与自动任务全表、备份与恢复手把手（含通道二加密包的下载、openssl 解密与整库导入步骤）；原有功能清单、配置表、FAQ、隐私说明、已知边界、版本历史与 Fork 说明全部保留。
 
+
+### v1.2.4（2026-11-18）· 新增直传专用包（_worker.js 高级模式）
+
+- 新增 **`ym-blog-worker-deploy-*.zip` 直传专用包**：把根目录 catch-all 函数合成单个 `_worker.js`（合成入口 `build/worker-entry.js`，原函数源码一字未改；`node:` 内置模块按外部引用处理，靠站点的 nodejs_compat 运行时提供），方式二（手机部署包控制台上传）改用这个包。原因说清：CF 控制台拖拽上传**不会编译 `functions/` 文件夹**（官方文档明示），本站全部页面都靠后端出，普通部署包直传必然连首页都是 404，不是偶发、重试也没用；旧版常见问题把这类失败只归因于「下错成 Source code」不算错但没说透，本版把平台规矩写清。合成包与原 functions 版做过本地逐条对照（24 条用例全一致，含首页/文章页渲染、后台初始化与登录、发文全程），冒烟 229/229、SSRF 定向测试 8/8 不回归。原部署包与方式一/三不变。
+- 附带修一个旧包的真问题：普通部署包的打包清单漏了 `functions/_lib/ssrf.js`（友链检查与任务接口在用），照旧清单打出的普通包会缺文件、函数编译不过——本次在打包工作流里补上（只补缺失文件，不动其余逻辑）。
 
 ### v1.2.3（2026-11-18）· 密码文解锁令牌改限时 + 登录失败计数改原子自增（对抗式复读修复）
 
