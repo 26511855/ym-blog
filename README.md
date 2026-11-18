@@ -549,7 +549,7 @@ npx wrangler d1 execute ym-blog-db --remote --file schema/0004_media_trash.sql
 npx wrangler d1 execute ym-blog-db --remote --file schema/0005_comment_trash.sql
 ```
 做到这里你应该看到：每条命令都输出 success 字样。注意命令里是 `--remote`（对线上库执行），漏了它只会改本地模拟库、白忙一场。
-6. 部署：执行 `npx wrangler pages deploy. --project-name ym-blog`。
+6. 部署：执行 `npx wrangler pages deploy . --project-name ym-blog`。
 做到这里你应该看到：终端最后给出部署地址 `https://xxxx.ym-blog.pages.dev` 一类链接。
 7. 灌 Secret：逐个执行下面的命令，每执行一条，终端会提示你粘贴值，粘贴后回车（粘贴时屏幕不显示是正常的）：
 ```bash
