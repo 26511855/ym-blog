@@ -122,17 +122,30 @@ export async function loginLockState(env, username) {
   return { locked: remain > 0, remainSec: Math.max(0, remain), streak: g.fail_streak || 0 };
 }
 export async function recordLoginFail(env, username) {
-  const g = await first(env, 'SELECT fail_streak FROM login_guards WHERE username = ?', username);
-  const streak = (g?.fail_streak || 0) + 1;
-  let lockedUntil = 0;
-  if (streak >= 5) {
-    const over = streak - 5;
-    const minutes = Math.min(15 * Math.pow(2, over), 24 * 60);
-    lockedUntil = nowSec() + minutes * 60;
-  }
-  await run(env, 'INSERT INTO login_guards (username, fail_streak, locked_until) VALUES (?, ?, ?) ON CONFLICT(username) DO UPDATE SET fail_streak=excluded.fail_streak, locked_until=excluded.locked_until',
-    username, streak, lockedUntil);
-  return { streak, lockedUntil };
+  // 原子自增（C-19）：旧版先 SELECT 旧 streak、在 JS 里 +1 再整行覆写——
+  // 并发失败请求会读到同一个旧值、互相覆盖，计数少算、锁定被推迟。现照
+  // ratelimit.js hitLimit 的写法：单条 UPSERT 里由数据库做
+  // fail_streak = fail_streak + 1，locked_until 用 CASE 按「新 streak」
+  // 同步算（阈值/退避口径与旧版逐字一致：≥5 次起锁，15 分钟起指数翻倍、
+  // 上限 24 小时；CASE 展开代替 pow()，不依赖 SQLite 数学函数可用性）。
+  const t = nowSec();
+  await run(env, `INSERT INTO login_guards (username, fail_streak, locked_until) VALUES (?, 1, 0)
+    ON CONFLICT(username) DO UPDATE SET
+      fail_streak = login_guards.fail_streak + 1,
+      locked_until = CASE
+        WHEN login_guards.fail_streak + 1 < 5 THEN 0
+        WHEN login_guards.fail_streak + 1 = 5 THEN ? + 900
+        WHEN login_guards.fail_streak + 1 = 6 THEN ? + 1800
+        WHEN login_guards.fail_streak + 1 = 7 THEN ? + 3600
+        WHEN login_guards.fail_streak + 1 = 8 THEN ? + 7200
+        WHEN login_guards.fail_streak + 1 = 9 THEN ? + 14400
+        WHEN login_guards.fail_streak + 1 = 10 THEN ? + 28800
+        WHEN login_guards.fail_streak + 1 = 11 THEN ? + 57600
+        ELSE ? + 86400
+      END`,
+    username, t, t, t, t, t, t, t, t);
+  const g = await first(env, 'SELECT fail_streak, locked_until FROM login_guards WHERE username = ?', username);
+  return { streak: g?.fail_streak || 0, lockedUntil: g?.locked_until || 0 };
 }
 export async function clearLoginFails(env, username) {
   await run(env, 'DELETE FROM login_guards WHERE username = ?', username);

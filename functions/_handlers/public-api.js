@@ -8,7 +8,7 @@ import { getSettings } from '../_lib/settings.js';
 import { checkLimit } from '../_lib/ratelimit.js';
 import { verifyTurnstile } from '../_lib/turnstile.js';
 import { renderCommentText, countLinks, hitSpamWord } from '../_lib/sanitize.js';
-import { verifyPassword } from '../_lib/hash.js';
+import { verifyPassword, hashSecret } from '../_lib/hash.js';
 import { recordView } from '../_lib/stats.js';
 import { readCookie } from '../_lib/auth.js';
 import { sha256Hex } from '../_lib/http.js';
@@ -122,8 +122,15 @@ export async function handlePublicApi(env, request, method, path, url) {
     const body = await readJson(request);
     const ok = await verifyPassword(env, String(body.password || ''), post.password_hash);
     if (!ok) throw new HttpError('invalid', '密码错误', 401);
-    // 令牌由当前密码哈希派生：文章改密后旧令牌自动失效，校验端可复算比对（见 isUnlocked）
-    const token = await sha256Hex(`unlock:${postId}:${post.password_hash}`);
+    // 令牌 = hashSecret(文章号 + 当前密码哈希 + 时间窗)：hashSecret 以服务端
+    // 秘密 PASSWORD_PEPPER 为材料（部署必配、永不入库/不进仓库），不知道
+    // 秘密的人拿到 password_hash 也算不出令牌；时间窗 24 小时一格、校验认
+    // 当前格与上一格（见 isUnlocked），令牌最长约 48 小时、配合 Cookie 的
+    // Max-Age=86400 实际 24 小时内过期。文章改密后旧令牌同样自动失效。
+    // 旧版令牌是 sha256(文章号+password_hash) 确定值：全员共用、永不过期、
+    // 密码哈希一旦泄露即可离线算出（C-6）。改算法后旧 Cookie 全部失效、
+    // 需重新输一次密码，属预期。
+    const token = await makeUnlockToken(env, post);
     return json({ ok: true }, 200, {
       'Set-Cookie': `bk_unlock_${postId}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400`,
     });
@@ -174,11 +181,27 @@ export async function handlePublicApi(env, request, method, path, url) {
   return null;
 }
 
-// 文章密码是否已解锁（文章页 SSR 用）：Cookie 值应为 sha256(postId + 当前密码哈希)，改密即失效
+// ---- 文章解锁令牌（C-6）：HMAC 式 = hashSecret(秘密, 文章号+密码哈希+时间窗) ----
+// 取舍：仓内已有 preview_tokens 的「随机令牌存表」先例，但解锁是高频读路径
+// （每篇密码文每次访问都要验），存表要多一次 D1 读且需清理过期行；时间窗
+// 派生令牌无状态可复算、改密/换秘密/过窗自动失效，改动更小，故选时间窗方案。
+// 服务端秘密来源：PASSWORD_PEPPER（hashSecret 内部使用；部署必配的服务端
+// -only 环境变量，与密码哈希同一秘密体系，见 README 配置表）。
+export const UNLOCK_WINDOW_SEC = 24 * 3600; // 24 小时一格
+export async function makeUnlockToken(env, post, atSec = nowSec()) {
+  const w = Math.floor(atSec / UNLOCK_WINDOW_SEC);
+  return hashSecret(env, `unlock:${post.id}:${post.password_hash}:${w}`);
+}
+
+// 文章密码是否已解锁（文章页 SSR 用）：Cookie 值应为当前或上一时间窗的
+// 解锁令牌（认上一格是给跨窗临界点留缓冲：刚解锁就跨窗不该立刻被踢回）
 export async function isUnlocked(env, request, post) {
   if (!post.password_hash) return true;
   const v = readCookie(request, `bk_unlock_${post.id}`);
   if (!v) return false;
-  const expect = await sha256Hex(`unlock:${post.id}:${post.password_hash}`);
-  return v === expect;
+  const t = nowSec();
+  for (const at of [t, t - UNLOCK_WINDOW_SEC]) {
+    if (v === (await makeUnlockToken(env, post, at))) return true;
+  }
+  return false;
 }

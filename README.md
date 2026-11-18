@@ -2,7 +2,7 @@
 
 一个**带完整网页后台的真·动态博客**，全部跑在 Cloudflare 免费额度里：不用租服务器、不用数据库主机、不用备案。手机、平板、电脑打开后台就能写文章、传图、传视频、改站名和颜色，像用 App 一样点点点。适合个人小站，也按通用产品标准做了额度保护与防刷——别人拿去部署、人多了同样扛得住。
 
-![版本](https://img.shields.io/badge/版本-v1.2.2-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
+![版本](https://img.shields.io/badge/版本-v1.2.3-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
 
 **[下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
 
@@ -912,6 +912,12 @@ A：后台文章列表里删除即可（进回收站，30 天内可还原）；�
 - 新增「全程要碰到的钥匙和编号」逐样五点说明（管理员密码、恢复码、备份加密口令、密码胡椒、任务密钥、R2 凭据、两枚令牌、两个 ID、人机验证密钥）；配置表的 GitHub Secrets 清单补上 `BACKUP_PASSPHRASE`（共 13 项）。
 - 新增探活、保活、自动更新与自动任务全表、备份与恢复手把手（含通道二加密包的下载、openssl 解密与整库导入步骤）；原有功能清单、配置表、FAQ、隐私说明、已知边界、版本历史与 Fork 说明全部保留。
 
+
+### v1.2.3（2026-11-18）· 密码文解锁令牌改限时 + 登录失败计数改原子自增（对抗式复读修复）
+
+- **密码文章解锁令牌不再是永久确定值**：旧令牌就是文章号加密码哈希算出来的一个固定值——所有人共用、永不过期，谁拿到文章的密码哈希就能自己算出令牌直接看全文。现改成掺了服务端秘密（密码胡椒）和时间格的令牌：24 小时一格、验当前格与上一格，不知道秘密光有哈希算不出来，到期自动作废。**注意：升级后已经解锁过的访客 Cookie 全部失效，密码文章要重新输一次密码，属正常现象。** 解锁的用法、Cookie 名字、接口都没变。
+- **登录失败计数改原子自增**：旧写法是先查旧次数、在程序里加一再写回，两次失败同时发生时会互相覆盖、少算一次，锁定来得比设计晚。现改成由数据库在一条语句里自己加一（与限流计数同款写法）；连错 5 次锁 15 分钟、再犯翻倍、上限 24 小时的规则一个字没变。
+- 定向测试 9 项（改前 4 项失败、改后全过）；冒烟 229/229 不回归。
 
 ### v1.2.2（2026-11-18）· 友链探活补 SSRF 逐跳守卫 + 变量遮蔽改名（外部审计核验后修复）
 
