@@ -4,7 +4,7 @@
 
 ![版本](https://img.shields.io/badge/版本-v1.2.2-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
 
-**[打开站点](https://bk.ymaym.top) · [下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
+**[下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
 
 > **这版是怎么来的**：把几条成熟路线的长处缝在了一起——动态博客（WordPress/Typecho 那类）的防丢稿、回收站、版本回滚；新兴 CF 原生博客的边缘架构与友链探活；静态博客的轻快与耐用；再补上自研的账密登录、恢复码、看门狗与一键逃生导出。设计细节与取舍都在 [MAINTENANCE.md](MAINTENANCE.md) 与仓库内的设计说明里。
 
@@ -670,7 +670,7 @@ A：Secret 是「下一次部署」才注入运行环境的——灌完 Secret �
 **第一层 · 站长总览探活（本站作者在用 ym-dash）**
 
 - **需要什么**：一个会定时发请求的探活工具。本站作者用的是自建的测活总览 **ym-dash**（一个单独的小项目，里面有个探活 Worker，每 30 分钟自动把登记的站点挨个请求一遍）。你没有 ym-dash 也没关系：任何「网站可用性监控」类服务（如 UptimeRobot 一类）填上你的博客地址，效果一样；或者干脆靠下面第二层看门狗，它本身就带巡检。
-- **怎么加（以 ym-dash 为例）**：打开 ym-dash → 登录后台 → 站点管理 → 添加站点 → 名称填「博客」，URL 填 `https://bk.ymaym.top`（换成你自己的博客地址）→ 保存 → 点一次「立即检测」，看到返回 200、耗时几百毫秒就是通的。之后每 30 分钟自动探，结果在 ym-dash 总览页看：每站一行，正常/异常和响应毫秒数一目了然。
+- **怎么加（以 ym-dash 为例）**：打开 ym-dash → 登录后台 → 站点管理 → 添加站点 → 名称填「博客」，URL 填 `https://blog.example.com`（换成你自己的博客地址）→ 保存 → 点一次「立即检测」，看到返回 200、耗时几百毫秒就是通的。之后每 30 分钟自动探，结果在 ym-dash 总览页看：每站一行，正常/异常和响应毫秒数一目了然。
 - **探什么才算真活**：只探到「返回 200」还不够稳——要探**首页地址**且返回的是博客首页内容（标题、示例文章都在），才说明访客侧真的能用。更深一层再验 `/admin` 能出登录/初始化页，说明函数和数据库也通。本站的看门狗就是按「首页 + RSS + 健康端点」三处一起探的，比只探首页可靠。
 
 **第二层 · 看门狗自检（仓库自带，方式一配好就自动有）**
