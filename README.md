@@ -1,13 +1,8 @@
 # YM 博客 · 融合版
 
-![版本](https://img.shields.io/badge/版本-v1.2.1-blue)
-![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020)
-![D1](https://img.shields.io/badge/数据库-D1-blue)
-![R2](https://img.shields.io/badge/存储-R2-9cf)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
-
 一个**带完整网页后台的真·动态博客**，全部跑在 Cloudflare 免费额度里：不用租服务器、不用数据库主机、不用备案。手机、平板、电脑打开后台就能写文章、传图、传视频、改站名和颜色，像用 App 一样点点点。适合个人小站，也按通用产品标准做了额度保护与防刷——别人拿去部署、人多了同样扛得住。
+
+![版本](https://img.shields.io/badge/版本-v1.2.1-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
 
 **[打开站点](https://bk.ymaym.top) · [下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
 
