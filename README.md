@@ -2,7 +2,7 @@
 
 一个**带完整网页后台的真·动态博客**，全部跑在 Cloudflare 免费额度里：不用租服务器、不用数据库主机、不用备案。手机、平板、电脑打开后台就能写文章、传图、传视频、改站名和颜色，像用 App 一样点点点。适合个人小站，也按通用产品标准做了额度保护与防刷——别人拿去部署、人多了同样扛得住。
 
-![版本](https://img.shields.io/badge/版本-v1.2.1-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
+![版本](https://img.shields.io/badge/版本-v1.2.2-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
 
 **[打开站点](https://bk.ymaym.top) · [下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
 
@@ -912,6 +912,12 @@ A：后台文章列表里删除即可（进回收站，30 天内可还原）；�
 - 新增「全程要碰到的钥匙和编号」逐样五点说明（管理员密码、恢复码、备份加密口令、密码胡椒、任务密钥、R2 凭据、两枚令牌、两个 ID、人机验证密钥）；配置表的 GitHub Secrets 清单补上 `BACKUP_PASSPHRASE`（共 13 项）。
 - 新增探活、保活、自动更新与自动任务全表、备份与恢复手把手（含通道二加密包的下载、openssl 解密与整库导入步骤）；原有功能清单、配置表、FAQ、隐私说明、已知边界、版本历史与 Fork 说明全部保留。
 
+
+### v1.2.2（2026-11-18）· 友链探活补 SSRF 逐跳守卫 + 变量遮蔽改名（外部审计核验后修复）
+
+- **友链探活不再裸抓**：`checkOneLink` 原用 `redirect:'follow'` 且抓前零校验——友站被挂马/卖域名后 302 到内网、回环、云元数据地址会一路跟过去。现新增 `_lib/ssrf.js`（与 ym-nav 同一份守卫逻辑的副本），改走 `safeFetch`：首跳与每一跳跳转目标都先复检（私网/回环/链路本地/元数据/保留段、IPv6 内嵌形态、私有后缀域名全拦），跳转上限 5 跳，被拦或超限一律记 fail。友链虽都是站长自加，防的是友站出事后的被动跳转。
+- **防雷改名**：友链探活分批变量 `batch` 遮蔽了从 `_lib/db.js` 引入的 `batch()`（当前作用域没用到所以没炸，后来人在该块里调 batch 就会 TypeError），改名 `chunk`。
+- 新增 scripts/test-friend-check-ssrf.mjs 8 项定向测试（改前内网地址真被发出请求、302 跳元数据被当 ok，改后全拦）；冒烟 229/229 不回归。
 
 ### v1.2.1（2026-11-17）· 外部审计核验后修复（导入恢复跳转 / 恢复码原子消费 / 预览可撤销 / 评论校验 / 草稿重渲染）
 

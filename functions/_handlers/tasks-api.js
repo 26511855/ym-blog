@@ -4,6 +4,7 @@
 
 import { all, first, run, batch } from '../_lib/db.js';
 import { json, fail, nowSec, sha256Hex } from '../_lib/http.js';
+import { safeFetch } from '../_lib/ssrf.js';
 import { getSettings } from '../_lib/settings.js';
 import { exportSite, countOf } from '../_lib/backup.js';
 
@@ -20,14 +21,15 @@ async function taskAuthed(env, request) {
 }
 
 // 探活一条友链：只请求首页、8 秒超时、只看状态码；回写 health/fail_streak
+// 抓取走 _lib/ssrf.js 的 safeFetch（v1.2.2 起）：原来 redirect:'follow' 裸抓，
+// 友站被挂马/卖域名后 302 到内网/回环/云元数据地址会一路跟过去；现首跳与
+// 每一跳跳转目标都先过守卫复检，被拦或跳转超限一律记 fail。
 export async function checkOneLink(env, link) {
   let ok = false;
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    const resp = await fetch(link.url, { method: 'GET', redirect: 'follow', signal: ctrl.signal, headers: { 'User-Agent': 'ym-blog-linkcheck/1.0' } });
-    clearTimeout(timer);
+    const resp = await safeFetch(link.url, { method: 'GET', headers: { 'User-Agent': 'ym-blog-linkcheck/1.0' } }, { timeoutMs: 8000 });
     ok = resp.status < 500;
+    try { if (resp.body) await resp.body.cancel(); } catch { /* 只看状态码，不读 body */ }
   } catch { ok = false; }
   const streak = ok ? 0 : (link.fail_streak || 0) + 1;
   await run(env, 'UPDATE friend_links SET health = ?, fail_streak = ?, last_checked_at = ? WHERE id = ?',
@@ -69,10 +71,11 @@ export async function handleTasksApi(env, request, method, path) {
   if (method === 'POST' && path === '/api/tasks/friend-check') {
     const links = await all(env, 'SELECT * FROM friend_links WHERE enabled = 1');
     let ok = 0, failN = 0;
-    // 并发 5 条一批
+    // 并发 5 条一批（变量名用 chunk：叫 batch 会遮蔽从 _lib/db.js 引入的
+    // batch()——当前作用域没用到所以没炸，是给后来人埋的雷，v1.2.2 改名）
     for (let i = 0; i < links.length; i += 5) {
-      const batch = links.slice(i, i + 5);
-      const results = await Promise.all(batch.map((l) => checkOneLink(env, l)));
+      const chunk = links.slice(i, i + 5);
+      const results = await Promise.all(chunk.map((l) => checkOneLink(env, l)));
       for (const r of results) (r === 'ok' ? ok++ : failN++);
     }
     return json({ checked: links.length, ok, fail: failN });
