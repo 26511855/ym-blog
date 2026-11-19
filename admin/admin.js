@@ -198,13 +198,14 @@ function showSetup() {
     <form id="setupForm">
       <label class="f"><span>用户名（Username）</span><input type="text" name="username" autocomplete="username" required></label>
       <label class="f"><span>密码（至少 8 位）</span><input type="password" name="password" autocomplete="new-password" required></label>
+      <label class="f"><span>初始化口令（SETUP_TOKEN，部署时配在 Pages 环境变量里的那串）</span><input type="password" name="setup_token" autocomplete="off" required></label>
       <button class="btn primary block" type="submit">创建并进入后台</button>
     </form>`);
   $('#setupForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     try {
-      const r = await api('POST', '/api/admin/setup', { username: fd.get('username'), password: fd.get('password') });
+      const r = await api('POST', '/api/admin/setup', { username: fd.get('username'), password: fd.get('password'), setup_token: fd.get('setup_token') });
       openModal('请保存恢复码', `<p class="hint">${esc(r.note || '恢复码只显示这一次')}</p>
         <div class="codes">${(r.recovery_codes || []).map(esc).join('<br>')}</div>`,
         [{ label: '我已保存，进后台', cls: 'primary', onClick: async (close) => { close(); await enterApp(); } }]);
@@ -1545,8 +1546,8 @@ async function viewBackup(main) {
       <p class="hint">逃生包=全部文章的 Markdown（标记语法）原文 + 附件清单 + 评论与设置 JSON，任何博客系统都能接；
       整站 JSON 可被本站「导入恢复」原样吃回。导出不含会话/限流等运行态数据。</p>
       <div class="btnrow">
-        <a class="btn" href="/api/admin/export/markdown">⬇ 导出 Markdown 逃生包（.zip）</a>
-        <a class="btn" href="/api/admin/export/full.json">⬇ 导出整站 JSON</a>
+        <button class="btn" id="expMd" type="button">⬇ 导出 Markdown 逃生包（.zip）</button>
+        <button class="btn" id="expJson" type="button">⬇ 导出整站 JSON</button>
       </div>
     </div>
     <div class="card">
@@ -1572,6 +1573,18 @@ async function viewBackup(main) {
       await refreshMe();
     } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
   });
+  // 导出走 fetch 带 CSRF 头下载（中3）：服务端 GET 导出已要求 X-Requested-With，普通 <a> 链接带不上
+  const downloadWithHeader = async (path, filename) => {
+    const resp = await fetch(path, { headers: { 'X-Requested-With': 'fetch' }, credentials: 'same-origin' });
+    if (!resp.ok) { toast('导出失败（' + resp.status + '）', true); return; }
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  $('#expMd', main)?.addEventListener('click', () => downloadWithHeader('/api/admin/export/markdown', 'ym-blog-escape.zip'));
+  $('#expJson', main)?.addEventListener('click', () => downloadWithHeader('/api/admin/export/full.json', 'ym-blog-full.json'));
   $('#impBtn', main).addEventListener('click', () => $('#impFile', main).click());
   $('#impFile', main).addEventListener('change', async (e) => {
     const f = e.target.files[0]; e.target.value = '';

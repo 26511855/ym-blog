@@ -166,15 +166,24 @@ export function isBlockedHost(host) {
 // Validate an outbound URL. Returns the URL object when it is safe to
 // fetch, throws SsrfError('blocked') otherwise. Only http/https, no
 // embedded credentials, host must not be loopback/private/reserved.
-export function assertSafeUrl(input) {
+export function assertSafeUrl(input, opts = {}) {
   let u;
   try { u = input instanceof URL ? input : new URL(String(input)); } catch {
     throw new SsrfError('blocked', 'bad url');
   }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+  if (opts.requireHttps) {
+    if (u.protocol !== 'https:') throw new SsrfError('blocked', 'https required: ' + u.protocol);
+  } else if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new SsrfError('blocked', 'protocol not allowed: ' + u.protocol);
   }
   if (u.username || u.password) throw new SsrfError('blocked', 'credentials in url');
+  // 端口限制（低2）：只许协议默认端口，显式非标准端口一律拦（opts.allowedPorts 可放宽）
+  if (u.port) {
+    const allowed = opts.allowedPorts || (u.protocol === 'https:' ? ['443'] : ['80']);
+    if (!allowed.map(String).includes(String(u.port))) {
+      throw new SsrfError('blocked', 'port not allowed: ' + u.port);
+    }
+  }
   if (isBlockedHost(u.hostname)) throw new SsrfError('blocked', 'blocked host: ' + u.hostname);
   return u;
 }
@@ -206,9 +215,11 @@ export async function safeFetch(input, init = {}, opts = {}) {
   const doFetch = opts.fetchImpl || globalThis.fetch;
   const maxRedirects = opts.maxRedirects ?? MAX_REDIRECTS;
   const timeoutMs = opts.timeoutMs || 0;
-  let url = assertSafeUrl(input);
+  let url = assertSafeUrl(input, opts);
   let method = String(init.method || 'GET').toUpperCase();
   let body = init.body;
+  // 请求头做一份可变副本：跨源重定向时要能剥离 Authorization（高2），不能把 Key 带到别家
+  let curHeaders = new Headers(init.headers || {});
   let timer = null;
   let deadline = null;
   if (timeoutMs > 0) {
@@ -218,7 +229,15 @@ export async function safeFetch(input, init = {}, opts = {}) {
   const signal = combineSignals([init.signal, deadline ? deadline.signal : null]);
   try {
     for (let hop = 0; ; hop++) {
-      const res = await doFetch(url.toString(), { ...init, method, body, redirect: 'manual', signal });
+      const res = await doFetch(url.toString(), { ...init, headers: curHeaders, method, body, redirect: 'manual', signal });
+      // 响应体上限（低2）：声明的长度已超限就直接放弃，避免无界读入
+      if (opts.maxResponseBytes) {
+        const cl = Number(res.headers && typeof res.headers.get === 'function' ? res.headers.get('content-length') : 0);
+        if (Number.isFinite(cl) && cl > opts.maxResponseBytes) {
+          try { if (res.body) await res.body.cancel(); } catch { /* ignore */ }
+          throw new SsrfError('too_large', 'response too large: ' + cl);
+        }
+      }
       const location = res.headers && typeof res.headers.get === 'function' ? res.headers.get('Location') : null;
       if (!REDIRECT_STATUSES.has(res.status) || !location) return res;
       if (hop >= maxRedirects) {
@@ -229,7 +248,12 @@ export async function safeFetch(input, init = {}, opts = {}) {
       try { next = new URL(location, url); } catch {
         throw new SsrfError('blocked', 'unparseable redirect location');
       }
-      assertSafeUrl(next); // re-validate EVERY hop before following it
+      assertSafeUrl(next, opts); // re-validate EVERY hop before following it
+      // 跨源跳转剥离 Authorization：Key 只发给最初配置的那一家（高2）
+      if (opts.stripAuthOnRedirect !== false && next.origin !== url.origin) {
+        curHeaders.delete('authorization');
+        curHeaders.delete('Authorization');
+      }
       try { if (res.body) await res.body.cancel(); } catch { /* ignore */ }
       if (res.status === 303 && method !== 'GET' && method !== 'HEAD') {
         method = 'GET';

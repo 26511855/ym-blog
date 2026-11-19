@@ -22,6 +22,8 @@ async function safeEqStr(a, b) {
   return diff === 0;
 }
 import { hitLimit, peekLimit, checkLimit, limitSpec } from '../_lib/ratelimit.js';
+// 登录时序兜底（低1）：用户不存在时也跑一次等价校验，避免响应快慢暴露账号是否存在
+const DUMMY_HASH = 'pbkdf2$100000$' + Buffer.from('ym-blog-dummy-salt').toString('base64') + '$' + Buffer.from('ym-blog-dummy-hash-value-32byt').toString('base64');
 import { getSettings } from '../_lib/settings.js';
 
 function checkPasswordStrength(pw) {
@@ -38,11 +40,19 @@ export async function handleAuthApi(env, request, method, path) {
   // 首次初始化：库里没有任何站长时才能用，建完即永久关闭
   if (method === 'POST' && path === '/api/admin/setup') {
     if (!(await needsSetup(env))) return fail('forbidden', '初始化已完成', 403);
+    // 限流（中13/低1）：初始化入口按 IP 计数，防口令爆破（直用 hitLimit，不受后台限流档位 off 影响）
+    try {
+      const iph0 = await ipHash(env, request);
+      const lim = await hitLimit(env, `setup:${iph0}`, 10, 3600);
+      if (!lim.allowed) return fail('rate_limited', '初始化尝试次数过多，请一小时后再试', 429);
+    } catch { /* 限流表异常不挡正常初始化 */ }
     const body = await readJson(request);
-    // 可选门槛：部署时配了 SETUP_TOKEN 环境变量，就必须带对才给建号
-    // （挡住「部署完成到站长初始化之间被陌生人抢注」的窗口；没配则维持
-    // 原行为，靠 createAdminUser 的原子插入防并发双开）。
-    if (env.SETUP_TOKEN && !(await safeEqStr(body.setup_token, env.SETUP_TOKEN))) {
+    // fail-closed（高危余项）：没配 SETUP_TOKEN 一律拒绝初始化——旧版没配就裸奔，
+    // 部署完成到站长初始化之间的窗口里谁先打开谁抢注。部署时必须配 SETUP_TOKEN（见 README）。
+    if (!env.SETUP_TOKEN) {
+      return fail('forbidden', '服务端未配置 SETUP_TOKEN，拒绝初始化：请先在 Pages 环境变量里配好 SETUP_TOKEN 再来初始化', 403);
+    }
+    if (!(await safeEqStr(body.setup_token, env.SETUP_TOKEN))) {
       return fail('forbidden', '初始化口令不正确', 403);
     }
     const username = String(body.username || '').trim();
@@ -74,7 +84,7 @@ export async function handleAuthApi(env, request, method, path) {
     const ipSpec = limitSpec(settings, 'loginIp');
     if (ipSpec && (await peekLimit(env, `loginIp:${iph}`, ipSpec.windowSec)) >= ipSpec.limit) return fail('rate_limited', '本网络登录失败次数过多，请一小时后再试', 429);
     const user = await first(env, 'SELECT id, password_hash FROM admin_users WHERE username = ?', username);
-    const ok = user ? await verifyPassword(env, password, user.password_hash) : false;
+    const ok = user ? await verifyPassword(env, password, user.password_hash) : (await verifyPassword(env, password, DUMMY_HASH), false);
     if (!ok) {
       await recordLoginFail(env, username ? guardKey : `(empty)|${iph}`);
       if (ipSpec) await hitLimit(env, `loginIp:${iph}`, 100000, ipSpec.windowSec);

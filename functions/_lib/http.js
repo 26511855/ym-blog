@@ -78,6 +78,12 @@ export function securityHeaders(extra = {}) {
   return {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    'X-Frame-Options': 'SAMEORIGIN',
+    // 克制版 CSP（中11）：脚本只许本站与 Turnstile，嵌入只许 B 站/YouTube 官方播放器，
+    // 图片/媒体允许 https（媒体桶是独立域名），样式保留 unsafe-inline（站内有行内 style 属性）
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' https: blob:; frame-src https://player.bilibili.com https://www.youtube.com https://www.youtube-nocookie.com https://challenges.cloudflare.com; connect-src 'self' https://challenges.cloudflare.com; font-src 'self' data:; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
     ...extra,
   };
 }

@@ -3,3 +3,10 @@
 # no-cache = 每次都回源核对（有 ETag，未改动回 304，几乎不耗流量），改版即时生效。
 /admin/*
   Cache-Control: no-cache
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Frame-Options: SAMEORIGIN
+  Permissions-Policy: camera=(), microphone=(), geolocation=()

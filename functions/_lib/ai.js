@@ -7,6 +7,7 @@
 
 import { all, run } from './db.js';
 import { nowSec, HttpError } from './http.js';
+import { safeFetch } from './ssrf.js';
 
 export const AI_DEFAULTS = {
   base_url: '',
@@ -57,7 +58,7 @@ export async function saveAiConfig(env, patch) {
       if (!Number.isFinite(v) || v < 0 || v > 2) throw new HttpError('bad_request', '温度（temperature）要在 0 到 2 之间', 400);
     } else if (k === 'base_url') {
       v = String(v).trim().replace(/\/+$/, '');
-      if (v && !/^https?:\/\/[^\s]+$/i.test(v)) throw new HttpError('bad_request', 'Base URL 格式不对，应以 http:// 或 https:// 开头', 400);
+      if (v && !/^https:\/\/[^\s]+$/i.test(v)) throw new HttpError('bad_request', 'Base URL 格式不对：出于安全只允许 https:// 开头', 400);
       if (v.length > 300) throw new HttpError('bad_request', 'Base URL 太长', 400);
     } else if (k === 'api_key') {
       v = String(v).trim().slice(0, 500);
@@ -88,7 +89,8 @@ export async function aiGenerate(env, { mode, title, content }) {
   const url = cfg.base_url.replace(/\/+$/, '') + '/chat/completions';
   let resp;
   try {
-    resp = await fetch(url, {
+    // 走仓内 safeFetch（高2）：仅 https、每跳复检 SSRF、跨源重定向剥离 Authorization、响应体上限 5MB
+    resp = await safeFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.api_key}` },
       body: JSON.stringify({
@@ -100,15 +102,19 @@ export async function aiGenerate(env, { mode, title, content }) {
         ],
       }),
       signal: AbortSignal.timeout(90000),
-    });
+    }, { requireHttps: true, stripAuthOnRedirect: true, maxResponseBytes: 5 * 1024 * 1024, timeoutMs: 90000 });
   } catch (e) {
-    throw new HttpError('ai_upstream_error', `连不上 AI 服务（${url}）：请检查 Base URL 是否正确、服务是否可达`, 424);
+    throw new HttpError('ai_upstream_error', `连不上 AI 服务（${url}）：请检查 Base URL 是否正确、服务是否可达（只允许 https 且不能指向内网地址）`, 424);
   }
   if (!resp.ok) {
     throw new HttpError('ai_upstream_error', `AI 服务返回 ${resp.status}：请检查 API Key 与模型名是否正确`, 424);
   }
   let data;
-  try { data = await resp.json(); } catch { throw new HttpError('ai_upstream_error', 'AI 服务返回的不是合法 JSON', 424); }
+  try {
+    const txt = await resp.text();
+    if (txt.length > 5 * 1024 * 1024) throw new Error('too large');
+    data = JSON.parse(txt);
+  } catch { throw new HttpError('ai_upstream_error', 'AI 服务返回的不是合法 JSON 或内容过大', 424); }
   const text = data?.choices?.[0]?.message?.content;
   if (!text || !String(text).trim()) throw new HttpError('ai_upstream_error', 'AI 服务没有返回内容，请换个模型或稍后再试', 424);
   return { text: String(text).trim(), model: data.model || cfg.model || '' };

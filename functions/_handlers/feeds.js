@@ -42,7 +42,7 @@ export async function handleFeeds(env, request, method, path) {
 
   if (path === '/rss.xml') {
     if (!settings.rss_on) return new Response('Not Found', { status: 404 });
-    const key = await cacheKey(env);
+    const key = base + '|' + (await cacheKey(env)); // 缓存键含 Host/base（低8），换域名不串旧链接
     if (cache.rssKey === key && cache.rss) {
       return new Response(cache.rss, { headers: { 'Content-Type': 'application/rss+xml; charset=utf-8' } });
     }
@@ -68,7 +68,7 @@ ${items}
   }
 
   if (path === '/sitemap.xml') {
-    const key = await cacheKey(env);
+    const key = base + '|' + (await cacheKey(env));
     if (cache.smKey === key && cache.sitemap) {
       return new Response(cache.sitemap, { headers: { 'Content-Type': 'application/xml; charset=utf-8' } });
     }
@@ -76,8 +76,8 @@ ${items}
       WHERE type='post' AND (status='published' OR (status='scheduled' AND publish_at<=?)) AND password_hash IS NULL
       ORDER BY publish_at DESC LIMIT 1000`, t);
     const urls = [`${base}/`, `${base}/archive`, `${base}/tags`, `${base}/moments`, `${base}/links`, `${base}/about`]
-      .map((u) => `  <url><loc>${u}</loc></url>`).join('\n');
-    const postUrls = posts.map((p) => `  <url><loc>${base}/post/${encodeURIComponent(p.slug)}</loc><lastmod>${new Date((p.updated_at || 0) * 1000).toISOString().slice(0, 10)}</lastmod></url>`).join('\n');
+      .map((u) => `  <url><loc>${esc(u)}</loc></url>`).join('\n');
+    const postUrls = posts.map((p) => `  <url><loc>${esc(`${base}/post/${encodeURIComponent(p.slug)}`)}</loc><lastmod>${new Date((p.updated_at || 0) * 1000).toISOString().slice(0, 10)}</lastmod></url>`).join('\n');
     const sm = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n${postUrls}\n</urlset>`;
     cache = { ...cache, smKey: key, sitemap: sm };
     return new Response(sm, { headers: { 'Content-Type': 'application/xml; charset=utf-8' } });

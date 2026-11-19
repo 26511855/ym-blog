@@ -342,8 +342,15 @@ export async function handleAdminApi(env, request, method, path, url) {
     const head = await env.MEDIA.head(row.r2_key);
     if (!head) throw badRequest('对象还不存在：上传可能未完成，请重试');
     if (head.size !== row.size_bytes) throw badRequest(`大小对不上：登记 ${row.size_bytes} 字节，实际 ${head.size} 字节`);
+    // 校验补强（中8）：桶里对象的 Content-Type 若与登记 mime 不符则拒绝（能拿到才查，拿不到不拦）
+    const headCt = head.httpMetadata?.contentType || head.contentType || null;
+    if (headCt && row.mime && headCt.split(';')[0].trim().toLowerCase() !== String(row.mime).toLowerCase()) {
+      throw badRequest(`文件类型对不上：登记 ${row.mime}，实际 ${headCt}`);
+    }
+    // 合理范围夹取（低4）：宽高/时长只收有限正数并封顶，防脏值入库
+    const clampDim = (v, max) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), max) : null; };
     await run(env, 'UPDATE media SET status=?, width=?, height=?, duration_sec=? WHERE id = ?',
-      'ready', Number(body.width) || null, Number(body.height) || null, Number(body.duration_sec) || null, row.id);
+      'ready', clampDim(body.width, 20000), clampDim(body.height, 20000), clampDim(body.duration_sec, 86400), row.id);
     return json({ media_id: row.id, media_url: publicMediaUrl(env, row.r2_key) });
   }
 
@@ -379,7 +386,9 @@ export async function handleAdminApi(env, request, method, path, url) {
     const row = await first(env, 'SELECT * FROM media WHERE id = ?', Number(mediaMatch[1]));
     if (!row) throw notFound('媒体不存在');
     if (row.status !== 'trashed') throw badRequest('该文件不在回收站里');
-    await run(env, "UPDATE media SET status='ready', trashed_at=NULL WHERE id = ?", row.id);
+    // trashed_at 兜底（中7）：老库未跑 0004 迁移时无此列，退回只改 status，不让还原整体失败
+    try { await run(env, "UPDATE media SET status='ready', trashed_at=NULL WHERE id = ?", row.id); }
+    catch { await run(env, "UPDATE media SET status='ready' WHERE id = ?", row.id); }
     return json({ ok: true });
   }
   if (mediaMatch && method === 'PATCH') {
@@ -389,6 +398,8 @@ export async function handleAdminApi(env, request, method, path, url) {
     if (body.display_name !== undefined) { sets.push('display_name = ?'); params.push(String(body.display_name).slice(0, 120)); }
     if (body.album !== undefined) { sets.push('album = ?'); params.push(String(body.album).slice(0, 60) || null); }
     if (!sets.length) throw badRequest('没有要改的字段');
+    // 列名白名单断言（中4）：sets 只能是上面两个固定字面量，出现别的直接拒
+    if (!sets.every((x) => ['display_name = ?', 'album = ?'].includes(x))) throw badRequest('不允许的字段');
     await run(env, `UPDATE media SET ${sets.join(', ')} WHERE id = ?`, ...params, Number(mediaMatch[1]));
     return json({ ok: true });
   }
@@ -404,9 +415,11 @@ export async function handleAdminApi(env, request, method, path, url) {
         const usedBy = await all(env, "SELECT title FROM posts WHERE status != 'trash' AND content_md LIKE ? LIMIT 5", `%${row.r2_key}%`);
         throw new HttpError('in_use', `该文件正被 ${refs} 篇文章引用（${usedBy.map((x) => x.title).join('、')}），确认要删请带 force=1`, 409);
       }
-      // 删法与清理任务 purge 的媒体真删同款：本站媒体只有一个对象键 r2_key（无缩略图等派生键），
-      // 先删 R2 对象本体、再删 media 行；对象删除失败不拦行删除（与任务侧口径一致）。
-      if (env.MEDIA) { try { await env.MEDIA.delete(row.r2_key); } catch { /* 对象可能已不存在 */ } }
+      // 删对象成功才删行（中9）：对象删失败就保留行，下次还能重试，不留无行可查的孤儿对象
+      if (env.MEDIA) {
+        try { await env.MEDIA.delete(row.r2_key); }
+        catch { throw badRequest('删除存储对象失败，已保留记录，请稍后重试'); }
+      }
       await run(env, 'DELETE FROM media WHERE id = ?', row.id);
       return json({ purged: true });
     }
@@ -416,8 +429,10 @@ export async function handleAdminApi(env, request, method, path, url) {
       // refs 的口径是四处引用合计（正文/封面/说说/头像），文案别只说「篇文章」
       throw new HttpError('in_use', `该文件正被引用 ${refs} 处（正文/封面/说说/头像合计${usedBy.length ? `，如文章：${usedBy.map((x) => x.title).join('、')}` : ''}），确认要删请带 force=1`, 409);
     }
-    // 落 trashed_at：清理任务按它算保留期（默认 30 天），没这个时间戳就无从判断到期与否
-    await run(env, "UPDATE media SET status='trashed', trashed_at=? WHERE id = ?", nowSec(), row.id);
+    // 落 trashed_at：清理任务按它算保留期（默认 30 天），没这个时间戳就无从判断到期与否；
+    // 老库未跑 0004 时退回只改 status（中7 兜底）
+    try { await run(env, "UPDATE media SET status='trashed', trashed_at=? WHERE id = ?", nowSec(), row.id); }
+    catch { await run(env, "UPDATE media SET status='trashed' WHERE id = ?", row.id); }
     return json({ ok: true, note: `已移入媒体回收站，${settings.trash_keep_days || 30} 天后由清理任务真删（保留天数以后台设置为准）` });
   }
 
@@ -587,6 +602,7 @@ export async function handleAdminApi(env, request, method, path, url) {
   }
   const bkMatch = path.match(/^\/api\/admin\/backups\/(\d+)(\/download)?$/);
   if (bkMatch && method === 'GET' && bkMatch[2] === '/download') {
+    requireCsrf(request); // GET 敏感下载也要 CSRF 头（中3）：后台改走 fetch 下载，跨站链接带不上此头
     const row = await first(env, 'SELECT * FROM backups WHERE id = ?', Number(bkMatch[1]));
     if (!row) throw notFound('备份不存在');
     if (!env.BACKUPS) throw badRequest('备份桶未绑定');
@@ -603,13 +619,18 @@ export async function handleAdminApi(env, request, method, path, url) {
   if (bkMatch && method === 'DELETE' && !bkMatch[2]) {
     const row = await first(env, 'SELECT * FROM backups WHERE id = ?', Number(bkMatch[1]));
     if (!row) throw notFound('备份不存在');
-    if (env.BACKUPS && row.r2_key) { try { await env.BACKUPS.delete(row.r2_key); } catch { /* 对象没了就算了 */ } }
+    // 删对象成功才删行（中9）：失败保留行可重试
+    if (env.BACKUPS && row.r2_key) {
+      try { await env.BACKUPS.delete(row.r2_key); }
+      catch { throw badRequest('删除备份文件失败，已保留记录，请稍后重试'); }
+    }
     await run(env, 'DELETE FROM backups WHERE id = ?', row.id);
     return json({ ok: true });
   }
 
   // ---- 导出 / 导入 / 备份 ----
   if (method === 'GET' && path === '/api/admin/export/markdown') {
+    requireCsrf(request); // 中3：GET 导出同样要 CSRF 头
     const { files, counts } = await buildMarkdownPack(env);
     const zip = zipStore(files);
     return new Response(zip, {
@@ -621,6 +642,7 @@ export async function handleAdminApi(env, request, method, path, url) {
     });
   }
   if (method === 'GET' && path === '/api/admin/export/full.json') {
+    requireCsrf(request); // 中3：GET 导出同样要 CSRF 头
     const data = await exportSite(env);
     return new Response(JSON.stringify(data, null, 2), {
       headers: { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="ym-blog-full-${new Date().toISOString().slice(0, 10)}.json"` },

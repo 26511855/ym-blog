@@ -57,6 +57,7 @@ const env = {
   MEDIA: new R2Shim(),
   BACKUPS: new R2Shim(),
   TASK_SECRET: 'smoke-task-secret',
+  SETUP_TOKEN: 'smoke-setup-token',
   PASSWORD_PEPPER: 'smoke-pepper',
   IP_SALT: 'smoke-ip',
   MEDIA_PUBLIC_BASE: 'https://media.example.com',
@@ -208,10 +209,10 @@ await req('POST', `/api/admin/posts/${postId}/publish`, { body: {}, headers: { '
 // ---------- 10. 浏览计数与导出 ----------
 resp = await req('POST', '/api/view', { body: { post_id: postId }, useCookie: false });
 check('浏览上报可用', resp.status === 200);
-resp = await req('GET', '/api/admin/export/full.json');
+resp = await req('GET', '/api/admin/export/full.json', { headers: { 'X-Requested-With': 'fetch' } });
 const full = await resp.json().catch(() => null);
 check('整站 JSON 导出', resp.status === 200 && full && full.app === 'ym-blog' && full.tables.posts.length >= 3);
-resp = await req('GET', '/api/admin/export/markdown');
+resp = await req('GET', '/api/admin/export/markdown', { headers: { 'X-Requested-With': 'fetch' } });
 const zipHead = new Uint8Array(await resp.arrayBuffer().then((b) => b.slice(0, 2)));
 check('Markdown 逃生包导出（zip）', resp.status === 200 && zipHead[0] === 0x50 && zipHead[1] === 0x4b);
 
@@ -347,7 +348,7 @@ check('新密码可登录', resp.status === 200);
   check('媒体软删（无引用可删）', resp.status === 200);
 
   // 导入：无 confirm 被拒；带 confirm 导入本站自己的导出（同文跳过、报告有 inserted）
-  resp = await req('GET', '/api/admin/export/full.json');
+  resp = await req('GET', '/api/admin/export/full.json', { headers: { 'X-Requested-With': 'fetch' } });
   const exportData = await resp.json();
   resp = await req('POST', '/api/admin/import', { body: { data: exportData }, ...H });
   check('导入无二次确认被拒（400）', resp.status === 400);
@@ -357,7 +358,7 @@ check('新密码可登录', resp.status === 200);
 
   // 【审计修复 2026-11-17】redirects 导入恢复：登记一条跳转 → 导出 → 删行 → 导入 → 条数恢复
   db.prepare('INSERT OR REPLACE INTO redirects (old_slug, post_id, created_at) VALUES (?, ?, ?)').run('smoke-old-slug', postId, 1700000000);
-  resp = await req('GET', '/api/admin/export/full.json');
+  resp = await req('GET', '/api/admin/export/full.json', { headers: { 'X-Requested-With': 'fetch' } });
   const exp2 = await resp.json();
   const expTables = exp2.data?.tables || exp2.tables || {};
   check('【审计修复】导出包含 redirects 行', (expTables.redirects || []).some((r) => r.old_slug === 'smoke-old-slug'));
@@ -427,7 +428,7 @@ const failed = results.filter((r) => !r.pass);
   check('【三批】备份列表接口', resp.status === 200 && Array.isArray(bkList?.backups) && bkList.backups.length >= 1 && bkList.total >= 1);
   const bkFirst = bkList.backups[0];
   check('【三批】备份列表带 r2_key（供对账定位）', typeof bkFirst.r2_key === 'string' && bkFirst.r2_key.startsWith('backup/'));
-  resp = await req('GET', `/api/admin/backups/${bkFirst.id}/download`);
+  resp = await req('GET', `/api/admin/backups/${bkFirst.id}/download`, { headers: { 'X-Requested-With': 'fetch' } });
   const bkText = await resp.text();
   check('【三批】备份下载（回 JSON 备份体）', resp.status === 200 && bkText.includes('"ym-blog"'));
   resp = await req('POST', '/api/admin/backup/run', { body: {}, ...H });
@@ -438,7 +439,7 @@ const failed = results.filter((r) => !r.pass);
   check('【三批】新备份出现在列表里', !!tmpRow);
   resp = await req('DELETE', `/api/admin/backups/${tmpRow.id}`, { ...H });
   check('【三批】删除备份（登记+桶对象一起删）', resp.status === 200);
-  resp = await req('GET', `/api/admin/backups/${tmpRow.id}/download`);
+  resp = await req('GET', `/api/admin/backups/${tmpRow.id}/download`, { headers: { 'X-Requested-With': 'fetch' } });
   check('【三批】已删备份再下载 404', resp.status === 404);
 
   // 缺口 3：按天统计明细（先造一天计数再查序列）
@@ -649,10 +650,10 @@ const failed = results.filter((r) => !r.pass);
   check('【六批】未登录读 AI 配置被拒（401）', resp.status === 401);
 
   // ---- 备份不带 AI 密钥（第五轮审计 BL-M2 裁决）：此时库里存着 Key（sk-smoke-secret-2），三条导出路径都不得带出 ----
-  resp = await req('GET', '/api/admin/export/full.json');
+  resp = await req('GET', '/api/admin/export/full.json', { headers: { 'X-Requested-With': 'fetch' } });
   const fullNoKey = await resp.text();
   check('【五轮】整站 JSON 导出剔除 ai_api_key（键与值都不出现）', resp.status === 200 && !fullNoKey.includes('ai_api_key') && !fullNoKey.includes('sk-smoke-secret-2'));
-  resp = await req('GET', '/api/admin/export/markdown');
+  resp = await req('GET', '/api/admin/export/markdown', { headers: { 'X-Requested-With': 'fetch' } });
   const packNoKey = new TextDecoder().decode(await resp.arrayBuffer());
   check('【五轮】Markdown 逃生包剔除 ai_api_key 的值', resp.status === 200 && !packNoKey.includes('sk-smoke-secret-2'));
   resp = await req('POST', '/api/admin/backup/run', { body: {}, headers: H });

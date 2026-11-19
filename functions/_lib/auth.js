@@ -56,6 +56,10 @@ export async function getSessionUser(env, request) {
 export async function requireAdmin(env, request) {
   const user = await getSessionUser(env, request);
   if (!user) throw unauthorized();
+  // role 校验（中1）：role 是预留字段，只认 owner/admin，其余一律不当站长
+  if (user.role && !['owner', 'admin'].includes(user.role)) {
+    throw new HttpError('forbidden', '账号角色无权访问后台', 403);
+  }
   return user;
 }
 
@@ -82,6 +86,8 @@ export async function listSessions(env, userId) {
 export async function ensureInitialAdmin(env) {
   const existing = await first(env, 'SELECT id FROM admin_users LIMIT 1');
   if (existing) return false;
+  // fail-closed（高危余项）：未配 SETUP_TOKEN 时不许用环境变量路径建号，与页面 setup 同门
+  if (!env.SETUP_TOKEN) return false;
   const username = env.INITIAL_ADMIN_USERNAME;
   const password = env.INITIAL_ADMIN_PASSWORD;
   if (!username || !password) return false;

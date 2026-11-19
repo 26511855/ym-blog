@@ -7,11 +7,28 @@ import { esc } from './http.js';
 export function parseVideoUrl(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
-  let m = s.match(/BV[0-9A-Za-z]{10}/);
-  if (m && /bilibili\.com|b23\.tv/i.test(s)) return { platform: 'bilibili', id: m[0] };
   if (/^BV[0-9A-Za-z]{10}$/.test(s)) return { platform: 'bilibili', id: s };
-  m = s.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([0-9A-Za-z_-]{6,})/);
-  if (m) return { platform: 'youtube', id: m[1] };
+  // hostname 锚定（低9）：先解析 URL、域名必须精确命中白名单，再从路径/参数里提 ID；
+  // 旧版子串匹配会把 evilbilibili.com 这类仿冒域名也当 B 站处理。
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s); } catch { return null; }
+  const host = u.hostname.toLowerCase();
+  if (['www.bilibili.com', 'bilibili.com', 'm.bilibili.com', 'b23.tv'].includes(host)) {
+    const m = (u.pathname + u.search).match(/BV[0-9A-Za-z]{10}/);
+    if (m) return { platform: 'bilibili', id: m[0] };
+    return null;
+  }
+  if (['www.youtube.com', 'youtube.com', 'm.youtube.com', 'www.youtube-nocookie.com'].includes(host)) {
+    const v = u.searchParams.get('v');
+    if (v && /^[0-9A-Za-z_-]{6,}$/.test(v)) return { platform: 'youtube', id: v };
+    const m = u.pathname.match(/\/(?:embed|shorts)\/([0-9A-Za-z_-]{6,})/);
+    if (m) return { platform: 'youtube', id: m[1] };
+    return null;
+  }
+  if (host === 'youtu.be') {
+    const m = u.pathname.match(/\/([0-9A-Za-z_-]{6,})/);
+    if (m) return { platform: 'youtube', id: m[1] };
+  }
   return null;
 }
 

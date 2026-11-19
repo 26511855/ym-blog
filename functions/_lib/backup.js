@@ -18,9 +18,18 @@ const SKIP_SETTING_KEYS = (k) => k.startsWith('_');
 // 只挡导出、不挡导入：老备份里带 ai_api_key 的仍可正常导入（导入侧是 INSERT OR IGNORE，不覆盖现值）。
 const SECRET_SETTING_KEYS = new Set(['ai_api_key']);
 
+const IDENT_RE = /^[a-z_][a-z0-9_]*$/;
+function assertTable(table) {
+  if (!EXPORT_TABLES.includes(table) || !IDENT_RE.test(table)) throw new Error('不允许的表名: ' + table);
+}
+function assertCols(table, cols) {
+  for (const c of cols) if (!IDENT_RE.test(c)) throw new Error(`不允许的列名: ${table}.${c}`);
+}
+
 export async function exportSite(env) {
   const data = { app: 'ym-blog', version: 1, exported_at: new Date().toISOString(), tables: {} };
   for (const table of EXPORT_TABLES) {
+    assertTable(table);
     let rows = await all(env, `SELECT * FROM ${table}`);
     if (table === 'settings') rows = rows.filter((r) => !SKIP_SETTING_KEYS(r.key) && !SECRET_SETTING_KEYS.has(r.key));
     // admin_users 整行导出（含 password_hash）：整站恢复需要它；本导出只走
@@ -141,18 +150,25 @@ export async function importSite(env, data) {
   const report = { inserted: {}, slugRenamed: [], errors: [] };
   const t = nowSec();
   const insertRow = async (table, row, cols) => {
+    assertTable(table); assertCols(table, cols);
     const keys = cols.filter((c) => row[c] !== undefined);
     const sql = `INSERT OR IGNORE INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`;
     await run(env, sql, ...keys.map((k) => row[k]));
   };
+  // 中5：单行失败不中断整批，收集到 report.errors 里给站长看
+  const guard = async (table, fn) => { try { await fn(); } catch (e) { report.errors.push(`${table}: ${e?.message || e}`); } };
   const T = data.tables;
   // admin_users：只在本站还没有该用户名时补（不覆盖现站长密码）
   for (const u of T.admin_users || []) {
-    const exists = await first(env, 'SELECT id FROM admin_users WHERE username = ?', u.username);
-    if (!exists && u.password_hash) {
-      await insertRow('admin_users', u, ['id', 'username', 'password_hash', 'role', 'password_updated_at', 'created_at']);
-      report.inserted.admin_users = (report.inserted.admin_users || 0) + 1;
-    }
+    await guard('admin_users', async () => {
+      const exists = await first(env, 'SELECT id FROM admin_users WHERE username = ?', u.username);
+      if (!exists && u.password_hash) {
+        // role 白名单（中1）：备份里的 role 只认 owner/admin，其余按 owner 落（本站是单站长模型）
+        const safeUser = { ...u, role: ['owner', 'admin'].includes(u.role) ? u.role : 'owner' };
+        await insertRow('admin_users', safeUser, ['id', 'username', 'password_hash', 'role', 'password_updated_at', 'created_at']);
+        report.inserted.admin_users = (report.inserted.admin_users || 0) + 1;
+      }
+    });
   }
   for (const s of T.settings || []) {
     if (SKIP_SETTING_KEYS(s.key)) continue;
@@ -196,6 +212,8 @@ export async function importSite(env, data) {
       report.slugRenamed.push({ from: oldSlug, to: row.slug });
     }
     if (sameId) row.id = undefined; // id 被占但 slug 不同：让其自增新 id
+    // 高1：备份里的 rendered_html 一律丢弃，用现行渲染管线（含净化）重渲染，防被做过手脚的备份种下存储型 XSS
+    row.rendered_html = row.content_md ? renderMarkdown(row.content_md).html : '';
     // 封面走媒体映射改写（映射里没有就置空，绝不保留旧 id 乱指）
     row.cover_media_id = row.cover_media_id != null ? (mediaMap.get(row.cover_media_id) ?? null) : null;
     const cols = ['slug', 'type', 'title', 'content_md', 'rendered_html', 'excerpt', 'cover_media_id', 'status', 'publish_at', 'password_hash', 'is_sticky', 'comment_enabled', 'word_count', 'trashed_at', 'created_at', 'updated_at'];
@@ -207,11 +225,7 @@ export async function importSite(env, data) {
       if (row.slug !== p.slug) {
         await run(env, 'INSERT OR IGNORE INTO redirects (old_slug, post_id, created_at) VALUES (?, ?, ?)', p.slug, created.id, t).catch(() => {});
       }
-      // 渲染兜底：老备份若 rendered_html 为空，用当前渲染器补上
-      if (!row.rendered_html && row.content_md) {
-        const { html } = renderMarkdown(row.content_md);
-        await run(env, 'UPDATE posts SET rendered_html = ? WHERE id = ?', html, created.id);
-      }
+      // rendered_html 已在入库前统一重渲染（见上方高1），这里不再回填备份原值
     }
     report.inserted.posts = (report.inserted.posts || 0) + 1;
   }

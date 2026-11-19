@@ -36,3 +36,4 @@ R2_S3_BUCKET = "ym-blog-media"
 # INITIAL_ADMIN_USERNAME —— 流水线预置占位（本方案不用它建号，建号走首次打开后台自行初始化）
 # INITIAL_ADMIN_PASSWORD —— 不要配：代码兼容此变量（与 INITIAL_ADMIN_USERNAME 齐备、且库中尚无站长时会被用来建号），但环境变量预置密码属高危做法，本方案明确不配（见 README 配置表与部署第 7 步）
 # TURNSTILE_SECRET                         —— 可选：开启人机验证时才需要（站点 key 在后台设置里）
+# SETUP_TOKEN                              —— 必填（v1.2.5 起）：首次初始化站长的口令门，没配它初始化会被拒绝

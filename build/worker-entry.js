@@ -27,6 +27,12 @@ async function serveAsset(request, env, url) {
   if (url.pathname.startsWith('/admin/')) {
     const headers = new Headers(resp.headers);
     headers.set('Cache-Control', 'no-cache');
+    // 静态层安全头与 _headers 对齐（中11）：高级模式下 _headers 不生效，靠这里补
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    headers.set('X-Frame-Options', 'DENY');
+    headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
   }
   return resp;

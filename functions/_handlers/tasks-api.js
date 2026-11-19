@@ -56,7 +56,8 @@ export async function runBackup(env, kind = 'auto-weekly') {
   const keep = settings.backup_keep || 12;
   const old = await all(env, "SELECT id, r2_key FROM backups WHERE kind = 'auto-weekly' ORDER BY created_at DESC LIMIT 1000 OFFSET ?", keep);
   for (const o of old) {
-    if (o.r2_key) { try { await env.BACKUPS.delete(o.r2_key); } catch { /* 对象没了就算了 */ } }
+    // 删对象成功才删行（中9）：失败保留行，下轮轮换会重试
+    if (o.r2_key) { try { await env.BACKUPS.delete(o.r2_key); } catch { continue; } }
     await run(env, 'DELETE FROM backups WHERE id = ?', o.id);
   }
   return { id: r.meta.last_row_id, r2_key: key, size_bytes: byteSize, ...counts };
@@ -70,15 +71,17 @@ export async function handleTasksApi(env, request, method, path) {
 
   if (method === 'POST' && path === '/api/tasks/friend-check') {
     const links = await all(env, 'SELECT * FROM friend_links WHERE enabled = 1');
-    let ok = 0, failN = 0;
-    // 并发 5 条一批（变量名用 chunk：叫 batch 会遮蔽从 _lib/db.js 引入的
-    // batch()——当前作用域没用到所以没炸，是给后来人埋的雷，v1.2.2 改名）
+    let ok = 0, failN = 0, checked = 0;
+    // 总超时（低5）：整轮最多约 25 秒，超时未查的留到下轮自愈，不拖死 Functions 时限
+    const deadline = Date.now() + 25000;
     for (let i = 0; i < links.length; i += 5) {
+      if (Date.now() > deadline) break;
       const chunk = links.slice(i, i + 5);
       const results = await Promise.all(chunk.map((l) => checkOneLink(env, l)));
+      checked += chunk.length;
       for (const r of results) (r === 'ok' ? ok++ : failN++);
     }
-    return json({ checked: links.length, ok, fail: failN });
+    return json({ checked, total: links.length, ok, fail: failN, truncated: checked < links.length });
   }
 
   if (method === 'POST' && path === '/api/tasks/purge') {
@@ -120,7 +123,10 @@ export async function handleTasksApi(env, request, method, path) {
     // 媒体进回收站次日即被真删，与 README「30 天后才真删」的承诺不符（v1.1.2 修复，
     // 依赖迁移 0004 的 media.trashed_at）。trashed_at 为空的一律跳过：迁移已给存量
     // 回填起算时间，万一仍为空，宁可留着也绝不速删。真删前仍复查全部引用位，在用的绝不真删。
-    const deadMedia = await all(env, "SELECT * FROM media WHERE status='trashed' AND trashed_at IS NOT NULL AND trashed_at < ?", cutoff);
+    let deadMedia = [];
+    try {
+      deadMedia = await all(env, "SELECT * FROM media WHERE status='trashed' AND trashed_at IS NOT NULL AND trashed_at < ?", cutoff);
+    } catch { deadMedia = []; /* 未跑 0004 迁移时无 trashed_at 列：跳过媒体真删，绝不误判到期（中7） */ }
     let mediaDeleted = 0;
     for (const m of deadMedia) {
       const used = await first(env, "SELECT id FROM posts WHERE status != 'trash' AND content_md LIKE ? LIMIT 1", `%${m.r2_key}%`)
@@ -128,7 +134,7 @@ export async function handleTasksApi(env, request, method, path) {
         || await first(env, "SELECT id FROM moments WHERE status != 'trash' AND media_id = ? LIMIT 1", m.id)
         || (Number(settings.avatar_media_id || 0) === Number(m.id) ? { id: m.id } : null);
       if (used) continue;
-      if (env.MEDIA) { try { await env.MEDIA.delete(m.r2_key); } catch { /* 同上 */ } }
+      if (env.MEDIA) { try { await env.MEDIA.delete(m.r2_key); } catch { continue; /* 删对象失败保留行重试（中9） */ } }
       await run(env, 'DELETE FROM media WHERE id = ?', m.id);
       mediaDeleted++;
     }
@@ -136,7 +142,7 @@ export async function handleTasksApi(env, request, method, path) {
     // 超 24 小时未完成登记的 pending 媒体行（签了没传的垃圾行）
     const stalePending = await all(env, "SELECT * FROM media WHERE status='pending' AND created_at < ?", t - 86400);
     for (const m of stalePending) {
-      if (env.MEDIA) { try { await env.MEDIA.delete(m.r2_key); } catch { /* 对象可能根本没传上来 */ } }
+      if (env.MEDIA) { try { await env.MEDIA.delete(m.r2_key); } catch { continue; /* 同中9：失败保留行 */ } }
       await run(env, 'DELETE FROM media WHERE id = ?', m.id);
     }
     result.pending_media = stalePending.length;

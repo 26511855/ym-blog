@@ -72,7 +72,14 @@ export function sanitizeHtml(html) {
         const ok = safeUrl(val, srcCheck && name === 'src');
         if (!ok) continue;
         attrs += ` ${name}="${esc(ok)}"`;
+      } else if (name === 'allow') {
+        // allow 白名单（中12）：只保留无害能力令牌，其余（camera/microphone/payment 等）一律丢弃
+        const ALLOW_OK = new Set(['autoplay', 'encrypted-media', 'picture-in-picture', 'fullscreen', 'accelerometer', 'gyroscope', 'web-share']);
+        const kept = String(val).split(';').map((x) => x.trim().toLowerCase()).filter((x) => ALLOW_OK.has(x));
+        if (kept.length) attrs += ` allow="${esc(kept.join('; '))}"`;
       } else if (name === 'allowfullscreen' || name === 'controls' || name === 'playsinline') {
+        // allowfullscreen 只给官方嵌入源（iframe 且 src 已过 EMBED_HOSTS 校验时 attrs 里才会有合法 src）
+        if (name === 'allowfullscreen' && tag === 'iframe' && !/src=/.test(attrs)) continue;
         attrs += ` ${name}`;
       } else {
         attrs += ` ${name}="${esc(val)}"`;

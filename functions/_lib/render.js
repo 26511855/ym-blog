@@ -56,6 +56,8 @@ function inline(text, ctx) {
 }
 
 function imageTag({ alt, src }) {
+  // 协议守卫（低9）：只许 http(s) 与站内相对路径，其余（javascript:/data:text 等）直接不出图
+  if (!/^(https?:\/\/|\/)/i.test(String(src || ''))) return '';
   // alt/src 来自 inline() 已整体 esc 过的文本（提取图片语法时就是转义态），
   // 这里绝不能再 esc 一次——旧版二次转义让带 & 的图片 URL 变成 &amp;amp;
   // 失效（2026-11-13 三方审查 B#4）。出口还有 sanitizeHtml 做解码+单次
