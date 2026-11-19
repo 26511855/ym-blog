@@ -10,6 +10,7 @@ name: deploy
 #   R2_S3_ENDPOINT                                —— https://<账号ID>.r2.cloudflarestorage.com（选填，缺省用账号 ID 拼）
 #   R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY       —— 媒体桶的 S3 凭据（运行时 Secret，直传必需）
 #   PASSWORD_PEPPER / TASK_SECRET                 —— 密码胡椒 / 定时任务密钥（运行时 Secret）
+#   SETUP_TOKEN                                   —— 首次初始化口令（运行时 Secret；新部署必填，老站已初始化可不配）
 #   INITIAL_ADMIN_USERNAME —— 预置占位（本方案不用它建号：站长首次打开后台自行初始化并领恢复码）
 #   INITIAL_ADMIN_PASSWORD —— 本方案不使用、不要配（下方透传仅为兼容，没配自动跳过）
 #   TASK_SECRET 与 SITE_URL 同时也被 watchdog / friend-check / purge / backup 四个工作流共用。
@@ -23,6 +24,13 @@ on:
 env:
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -39,15 +47,17 @@ jobs:
           MEDIA_PUBLIC_BASE: ${{ secrets.MEDIA_PUBLIC_BASE }}
           R2_S3_ENDPOINT: ${{ secrets.R2_S3_ENDPOINT }}
         run: |
+          esc_slash() { printf '%s' "$1" | sed -e 's/[\\&/]/\\&/g'; }
+          esc_pipe() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
           if [ -n "$D1_DATABASE_ID" ]; then
-            sed -i "s/00000000-0000-0000-0000-000000000000/$D1_DATABASE_ID/" wrangler.toml
+            sed -i "s/00000000-0000-0000-0000-000000000000/$(esc_slash "$D1_DATABASE_ID")/" wrangler.toml
           fi
           if [ -n "$MEDIA_PUBLIC_BASE" ]; then
-            sed -i "s|https://media.example.com|$MEDIA_PUBLIC_BASE|" wrangler.toml
+            sed -i "s|https://media.example.com|$(esc_pipe "$MEDIA_PUBLIC_BASE")|" wrangler.toml
           fi
           EP="$R2_S3_ENDPOINT"
           if [ -z "$EP" ]; then EP="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"; fi
-          sed -i "s|https://00000000000000000000000000000000.r2.cloudflarestorage.com|$EP|" wrangler.toml
+          sed -i "s|https://00000000000000000000000000000000.r2.cloudflarestorage.com|$(esc_pipe "$EP")|" wrangler.toml
           grep -q "00000000-0000-0000-0000" wrangler.toml && echo "::warning::database_id 仍是占位值（未配 D1_DATABASE_ID），绑定将指向不存在的库" || true
       - name: 推送 Pages 加密变量（Secret 逐个灌入，缺哪个跳哪个）
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
@@ -56,6 +66,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           PASSWORD_PEPPER: ${{ secrets.PASSWORD_PEPPER }}
           TASK_SECRET: ${{ secrets.TASK_SECRET }}
+          SETUP_TOKEN: ${{ secrets.SETUP_TOKEN }}
           INITIAL_ADMIN_USERNAME: ${{ secrets.INITIAL_ADMIN_USERNAME }}
           INITIAL_ADMIN_PASSWORD: ${{ secrets.INITIAL_ADMIN_PASSWORD }}
         run: |
@@ -70,6 +81,7 @@ jobs:
           put R2_SECRET_ACCESS_KEY "$R2_SECRET_ACCESS_KEY"
           put PASSWORD_PEPPER "$PASSWORD_PEPPER"
           put TASK_SECRET "$TASK_SECRET"
+          put SETUP_TOKEN "$SETUP_TOKEN"
           put INITIAL_ADMIN_USERNAME "$INITIAL_ADMIN_USERNAME"
           put INITIAL_ADMIN_PASSWORD "$INITIAL_ADMIN_PASSWORD"
       - name: 部署到 Cloudflare Pages
