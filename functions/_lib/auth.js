@@ -7,7 +7,7 @@ import { nowSec, sha256Hex, unauthorized, HttpError, ipHash } from './http.js';
 import { hashPassword, hashSecret } from './hash.js';
 
 export const SESSION_COOKIE = 'bk_session';
-const SESSION_TTL = 30 * 24 * 3600; // 30 天绝对过期
+const SESSION_TTL = 7 * 24 * 3600; // 7 天绝对过期（原 30 天，Peter 2026-11-19 拍板改短）
 
 export function readCookie(request, name) {
   const raw = request.headers.get('cookie') || '';

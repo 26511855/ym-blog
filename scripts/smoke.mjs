@@ -403,6 +403,18 @@ check('新密码可登录', resp.status === 200);
   check('改密后旧会话被吊销（401）', resp.status === 401);
   resp = await req('POST', '/api/admin/login', { body: { username: 'smoke-admin', password: 'smoke-pass-456' }, ...H, useCookie: false });
   check('新密码重新登录', resp.status === 200 && cookie.includes('bk_session='));
+  // 会话新口径（v1.2.6 拍板落实）：有效期 7 天 + 每次登录轮换、旧会话立即失效
+  check('会话 Cookie 有效期为 7 天（Max-Age=604800）', (resp.headers.get('set-cookie') || '').includes('Max-Age=604800'), resp.headers.get('set-cookie') || '');
+  const firstCookie = cookie;
+  resp = await req('POST', '/api/admin/login', { body: { username: 'smoke-admin', password: 'smoke-pass-456' }, ...H, useCookie: false });
+  check('二次登录轮换出新令牌', resp.status === 200 && cookie.includes('bk_session=') && cookie !== firstCookie);
+  const newCookie = cookie;
+  cookie = firstCookie;
+  resp = await req('GET', '/api/admin/me');
+  check('轮换后旧会话立即失效（401）', resp.status === 401);
+  cookie = newCookie;
+  resp = await req('GET', '/api/admin/me');
+  check('轮换后的新会话可用', resp.status === 200);
   resp = await req('GET', '/api/admin/sessions');
   check('会话列表', resp.status === 200 && ((await resp.json()).data?.sessions?.length || 0) >= 1);
   resp = await req('POST', '/api/admin/sessions/revoke-all', { body: {}, ...H });

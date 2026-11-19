@@ -2,7 +2,7 @@
 
 一个**带完整网页后台的真·动态博客**，全部跑在 Cloudflare 免费额度里：不用租服务器、不用数据库主机、不用备案。手机、平板、电脑打开后台就能写文章、传图、传视频、改站名和颜色，像用 App 一样点点点。适合个人小站，也按通用产品标准做了额度保护与防刷——别人拿去部署、人多了同样扛得住。
 
-![版本](https://img.shields.io/badge/版本-v1.2.5-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
+![版本](https://img.shields.io/badge/版本-v1.2.6-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
 
 **[下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
 
@@ -166,7 +166,7 @@
 
 - **账号密码登录**：单站长账号；密码只存哈希（scrypt，参数见维修手册），还加了服务端「胡椒」（Pepper，存在环境变量里、不进数据库，库被拖走也撞不开密码）。
 - **登录保护**：连续失败 5 次锁定 15 分钟、再犯指数退避；错误提示恒为「账号或密码错误」，不给试探口子。
-- **会话管理**：会话令牌只存哈希；能看全部登录设备、一键下线全部；改密码会自动踢掉所有设备。
+- **会话管理**：会话令牌只存哈希、有效期 7 天；每次登录都会轮换令牌并让此前的会话全部失效；能看全部登录设备、一键下线全部；改密码会自动踢掉所有设备。
 - **恢复码（第一层恢复）**：后台生成 10 个一次性恢复码（只显示一次），忘密码时在登录页用任意一个码直接重置；改密后旧码全废、重新生成。
 - **终极重置（第三层恢复）**：恢复码也丢了，进 Cloudflare 后台对数据库跑一句 SQL，就能回到「初始化站长」流程重设账号——完整步骤在 [MAINTENANCE.md](MAINTENANCE.md)，不依赖任何人。
 
@@ -917,6 +917,13 @@ A：后台文章列表里删除即可（进回收站，30 天内可还原）；�
 - 新增「全程要碰到的钥匙和编号」逐样五点说明（管理员密码、恢复码、备份加密口令、密码胡椒、任务密钥、R2 凭据、两枚令牌、两个 ID、人机验证密钥）；配置表的 GitHub Secrets 清单补上 `BACKUP_PASSPHRASE`（共 13 项）。
 - 新增探活、保活、自动更新与自动任务全表、备份与恢复手把手（含通道二加密包的下载、openssl 解密与整库导入步骤）；原有功能清单、配置表、FAQ、隐私说明、已知边界、版本历史与 Fork 说明全部保留。
 
+
+### v1.2.6（2026-11-19）· 后台会话改短 + 登录轮换（拍板落实）
+
+- **后台登录状态从 30 天改到 7 天**：到期要重新登录一次。
+- **每次登录都会轮换会话**：登录成功先把这个账号此前的全部会话吊销、再签发新令牌——旧令牌活不过下一次本人登录；被偷走的会话最长也就用到站长下次登录为止。与改密码 / 恢复码重置的「全部设备下线」口径一致。代价是同一账号在多台设备上轮着登录时，先登的那台会被挤下线（个人博客单站长场景可接受）。
+- 冒烟 233/233（新增 4 项：Cookie 有效期 7 天、二次登录轮换、旧会话立即失效、新会话可用）、SSRF 定向测试 8/8 通过。
+- **注意**：本版代码已推仓库，但部署要等仓库的 Cloudflare 部署令牌轮换收尾后才自动恢复（令牌问题与本版无关）；令牌修好后推送会触发自动部署，或手动跑一次部署工作流即可上线。
 
 ### v1.2.5（2026-11-19）· 安全修复（外部审查核实后）
 

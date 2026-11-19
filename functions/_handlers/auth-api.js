@@ -91,6 +91,10 @@ export async function handleAuthApi(env, request, method, path) {
       return fail('invalid', '账号或密码错误', 401);
     }
     await clearLoginFails(env, guardKey);
+    // 会话轮换（Peter 2026-11-19 拍板）：每次登录先吊销这个账号此前的全部
+    // 会话、再签发新令牌——旧令牌活不过下一次本人登录，被偷走的会话最多
+    // 用到站长下次登录为止。与改密/恢复重置的「全吊销」口径一致。
+    await revokeAllSessions(env, user.id);
     // 懒升级：老格式/低参数哈希在登录成功后按当前参数重哈希，用户无感；
     // 升级失败绝不挡登录（下次登录再试），所以整段吞错。
     if (hashNeedsUpgrade(user.password_hash)) {
