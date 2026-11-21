@@ -2,7 +2,7 @@
 
 一个**带完整网页后台的真·动态博客**，全部跑在 Cloudflare 免费额度里：不用租服务器、不用数据库主机、不用备案。手机、平板、电脑打开后台就能写文章、传图、传视频、改站名和颜色，像用 App 一样点点点。适合个人小站，也按通用产品标准做了额度保护与防刷——别人拿去部署、人多了同样扛得住。
 
-![版本](https://img.shields.io/badge/版本-v1.2.6-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
+![版本](https://img.shields.io/badge/版本-v1.2.7-blue) ![Cloudflare Pages](https://img.shields.io/badge/Cloudflare-Pages%20%2B%20Functions-f38020) ![D1](https://img.shields.io/badge/数据库-D1-blue) ![R2](https://img.shields.io/badge/存储-R2-9cf) ![License](https://img.shields.io/badge/license-MIT-green) ![Price](https://img.shields.io/badge/运行成本-免费额度内-brightgreen)
 
 **[下载最新版](https://github.com/YiMing918/ym-blog/releases/latest) · [博客教程](https://bk.ymaym.top/post/ym-blog-guide)**
 
@@ -917,6 +917,12 @@ A：后台文章列表里删除即可（进回收站，30 天内可还原）；�
 - 新增「全程要碰到的钥匙和编号」逐样五点说明（管理员密码、恢复码、备份加密口令、密码胡椒、任务密钥、R2 凭据、两枚令牌、两个 ID、人机验证密钥）；配置表的 GitHub Secrets 清单补上 `BACKUP_PASSPHRASE`（共 13 项）。
 - 新增探活、保活、自动更新与自动任务全表、备份与恢复手把手（含通道二加密包的下载、openssl 解密与整库导入步骤）；原有功能清单、配置表、FAQ、隐私说明、已知边界、版本历史与 Fork 说明全部保留。
 
+
+### v1.2.7（2026-11-21）· 备份导入中途失败不再留半截
+
+- **导入改成逐行兜底**：以前导入恢复是逐张表一路裸跑，中间任何一张表出一点错，后面的表就全部停下、前面写好的又留着，站点停在「导了一半」的状态。现在每写一行都有兜底：单行失败只记进对账报告、不中断后面的表；报告里逐表写清哪张表成功、哪张表有失败、失败在哪一行（报告字段 tables / failedTables / partial）。
+- **重导只补缺、不重复**：每张表都改成幂等写法——已有的设置、标签、媒体、友链不会重复写；评论、说说、历史版本这几张没有唯一键的表，按内容查重认出已经导过的那条；文章因链接冲突被改名导入的，重导时能凭跳转登记认出来，不会再多出一份副本。所以导入中途失败不用先回滚：修好失败原因，拿同一个备份再导一次就补齐了。
+- 导入口原有的「先全量备份才准导入」保持不变，真要退回导入前的状态，仍有整站备份可退。
 
 ### v1.2.6（2026-11-19）· 后台会话改短 + 登录轮换（拍板落实）
 

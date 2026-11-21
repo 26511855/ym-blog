@@ -155,8 +155,16 @@ export async function importSite(env, data) {
     const sql = `INSERT OR IGNORE INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`;
     await run(env, sql, ...keys.map((k) => row[k]));
   };
-  // 中5：单行失败不中断整批，收集到 report.errors 里给站长看
-  const guard = async (table, fn) => { try { await fn(); } catch (e) { report.errors.push(`${table}: ${e?.message || e}`); } };
+  // 单行失败不中断整批（中5），收集到 report.errors 里给站长看；同时按表记成败，
+  // 收尾时算出 failedTables / partial，让站长一眼知道哪张表没导全、能不能直接重导。
+  // 每张表的写入都是幂等口径（INSERT OR IGNORE / 先查后写 / 冲突取大），重跑同一
+  // 备份只补缺、不重复——所以中途失败不需要回滚，修好原因直接重导即可自愈。
+  const tableStats = {};
+  const stat = (table) => (tableStats[table] ||= { ok: 0, fail: 0 });
+  const guard = async (table, fn) => {
+    try { await fn(); stat(table).ok++; return true; }
+    catch (e) { stat(table).fail++; report.errors.push(`${table}: ${e?.message || e}`); return false; }
+  };
   const T = data.tables;
   // admin_users：只在本站还没有该用户名时补（不覆盖现站长密码）
   for (const u of T.admin_users || []) {
@@ -172,8 +180,10 @@ export async function importSite(env, data) {
   }
   for (const s of T.settings || []) {
     if (SKIP_SETTING_KEYS(s.key)) continue;
-    await insertRow('settings', s, ['key', 'value', 'updated_at']);
-    report.inserted.settings = (report.inserted.settings || 0) + 1;
+    await guard('settings', async () => {
+      await insertRow('settings', s, ['key', 'value', 'updated_at']);
+      report.inserted.settings = (report.inserted.settings || 0) + 1;
+    });
   }
   // 标签/媒体先建「旧 id → 本站 id」映射，后面所有引用都走映射改写。
   // 旧版带旧 id INSERT OR IGNORE：id 被现站占用时静默跳过，随后
@@ -181,69 +191,100 @@ export async function importSite(env, data) {
   // 会指到现站里不相干的标签/图片上（2026-11-13 三方审查 B#13）。
   const tagMap = new Map();
   for (const tg of T.tags || []) {
-    let row = await first(env, 'SELECT id FROM tags WHERE slug = ?', tg.slug);
-    if (!row) {
-      await run(env, 'INSERT OR IGNORE INTO tags (name, slug) VALUES (?, ?)', tg.name, tg.slug);
-      row = await first(env, 'SELECT id FROM tags WHERE slug = ?', tg.slug);
-    }
-    if (row) { tagMap.set(tg.id, row.id); report.inserted.tags = (report.inserted.tags || 0) + 1; }
+    await guard('tags', async () => {
+      let row = await first(env, 'SELECT id FROM tags WHERE slug = ?', tg.slug);
+      if (!row) {
+        await run(env, 'INSERT OR IGNORE INTO tags (name, slug) VALUES (?, ?)', tg.name, tg.slug);
+        row = await first(env, 'SELECT id FROM tags WHERE slug = ?', tg.slug);
+      }
+      if (row) { tagMap.set(tg.id, row.id); report.inserted.tags = (report.inserted.tags || 0) + 1; }
+    });
   }
   const mediaMap = new Map();
   for (const m of T.media || []) {
-    let row = await first(env, 'SELECT id FROM media WHERE r2_key = ?', m.r2_key);
-    if (!row) {
-      const cols = ['r2_key', 'kind', 'display_name', 'orig_name', 'mime', 'size_bytes', 'width', 'height', 'duration_sec', 'album', 'status', 'ref_count', 'trashed_at', 'created_at'];
-      const keys = cols.filter((c) => m[c] !== undefined);
-      const r = await run(env, `INSERT OR IGNORE INTO media (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, ...keys.map((k) => m[k]));
-      row = r.meta.changes ? { id: r.meta.last_row_id } : await first(env, 'SELECT id FROM media WHERE r2_key = ?', m.r2_key);
-    }
-    if (row) { mediaMap.set(m.id, row.id); report.inserted.media = (report.inserted.media || 0) + 1; }
+    await guard('media', async () => {
+      let row = await first(env, 'SELECT id FROM media WHERE r2_key = ?', m.r2_key);
+      if (!row) {
+        const cols = ['r2_key', 'kind', 'display_name', 'orig_name', 'mime', 'size_bytes', 'width', 'height', 'duration_sec', 'album', 'status', 'ref_count', 'trashed_at', 'created_at'];
+        const keys = cols.filter((c) => m[c] !== undefined);
+        const r = await run(env, `INSERT OR IGNORE INTO media (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`, ...keys.map((k) => m[k]));
+        row = r.meta.changes ? { id: r.meta.last_row_id } : await first(env, 'SELECT id FROM media WHERE r2_key = ?', m.r2_key);
+      }
+      if (row) { mediaMap.set(m.id, row.id); report.inserted.media = (report.inserted.media || 0) + 1; }
+    });
   }
   // 文章：slug 冲突 → 改名为 slug-import<ts> 并登记 redirect 指向新文（尽力保旧链可达）
   const idMap = new Map();
   for (const p of T.posts || []) {
-    let row = { ...p };
-    const sameId = await first(env, 'SELECT slug FROM posts WHERE id = ?', p.id);
-    if (sameId && sameId.slug === p.slug) { idMap.set(p.id, p.id); continue; } // 已存在同一篇，跳过
-    const slugTaken = await first(env, 'SELECT id FROM posts WHERE slug = ?', p.slug);
-    if (slugTaken) {
-      const oldSlug = p.slug;
-      row.slug = `${p.slug}-import${t}`;
-      report.slugRenamed.push({ from: oldSlug, to: row.slug });
-    }
-    if (sameId) row.id = undefined; // id 被占但 slug 不同：让其自增新 id
-    // 高1：备份里的 rendered_html 一律丢弃，用现行渲染管线（含净化）重渲染，防被做过手脚的备份种下存储型 XSS
-    row.rendered_html = row.content_md ? renderMarkdown(row.content_md).html : '';
-    // 封面走媒体映射改写（映射里没有就置空，绝不保留旧 id 乱指）
-    row.cover_media_id = row.cover_media_id != null ? (mediaMap.get(row.cover_media_id) ?? null) : null;
-    const cols = ['slug', 'type', 'title', 'content_md', 'rendered_html', 'excerpt', 'cover_media_id', 'status', 'publish_at', 'password_hash', 'is_sticky', 'comment_enabled', 'word_count', 'trashed_at', 'created_at', 'updated_at'];
-    if (row.id !== undefined) cols.unshift('id');
-    await insertRow('posts', row, cols);
-    const created = await first(env, 'SELECT id FROM posts WHERE slug = ?', row.slug);
-    if (created) {
-      idMap.set(p.id, created.id);
-      if (row.slug !== p.slug) {
-        await run(env, 'INSERT OR IGNORE INTO redirects (old_slug, post_id, created_at) VALUES (?, ?, ?)', p.slug, created.id, t).catch(() => {});
+    await guard('posts', async () => {
+      let row = { ...p };
+      const sameId = await first(env, 'SELECT slug FROM posts WHERE id = ?', p.id);
+      if (sameId && sameId.slug === p.slug) { idMap.set(p.id, p.id); return; } // 已存在同一篇，跳过
+      // 重导认亲：上次导入若因 slug 冲突改过名，会在 redirects 里留一条
+      // old_slug=原 slug → 改名文 的登记；凭它认出「这篇已经导进来过」，
+      // 否则重导会再造一份 -import 副本（改名文 slug 没冲突、id 又被占，旧逻辑兜不住）。
+      const prevRd = await first(env, 'SELECT post_id FROM redirects WHERE old_slug = ?', p.slug);
+      if (prevRd) {
+        const target = await first(env, 'SELECT slug FROM posts WHERE id = ?', prevRd.post_id);
+        if (target && target.slug.startsWith(`${p.slug}-import`)) { idMap.set(p.id, prevRd.post_id); return; }
       }
-      // rendered_html 已在入库前统一重渲染（见上方高1），这里不再回填备份原值
-    }
-    report.inserted.posts = (report.inserted.posts || 0) + 1;
+      const slugTaken = await first(env, 'SELECT id FROM posts WHERE slug = ?', p.slug);
+      let renamedFrom = null;
+      if (slugTaken) {
+        renamedFrom = p.slug;
+        row.slug = `${p.slug}-import${t}`;
+      }
+      if (sameId) row.id = undefined; // id 被占但 slug 不同：让其自增新 id
+      // 高1：备份里的 rendered_html 一律丢弃，用现行渲染管线（含净化）重渲染，防被做过手脚的备份种下存储型 XSS
+      row.rendered_html = row.content_md ? renderMarkdown(row.content_md).html : '';
+      // 封面走媒体映射改写（映射里没有就置空，绝不保留旧 id 乱指）
+      row.cover_media_id = row.cover_media_id != null ? (mediaMap.get(row.cover_media_id) ?? null) : null;
+      const cols = ['slug', 'type', 'title', 'content_md', 'rendered_html', 'excerpt', 'cover_media_id', 'status', 'publish_at', 'password_hash', 'is_sticky', 'comment_enabled', 'word_count', 'trashed_at', 'created_at', 'updated_at'];
+      if (row.id !== undefined) cols.unshift('id');
+      await insertRow('posts', row, cols);
+      const created = await first(env, 'SELECT id FROM posts WHERE slug = ?', row.slug);
+      if (created) {
+        idMap.set(p.id, created.id);
+        if (renamedFrom) {
+          report.slugRenamed.push({ from: renamedFrom, to: row.slug });
+          await run(env, 'INSERT OR IGNORE INTO redirects (old_slug, post_id, created_at) VALUES (?, ?, ?)', p.slug, created.id, t).catch(() => {});
+        }
+        // rendered_html 已在入库前统一重渲染（见上方高1），这里不再回填备份原值
+      }
+      report.inserted.posts = (report.inserted.posts || 0) + 1;
+    });
   }
   for (const pt of T.post_tags || []) {
     const pid = idMap.get(pt.post_id);
     const tid = tagMap.get(pt.tag_id);
-    if (pid && tid) { await insertRow('post_tags', { post_id: pid, tag_id: tid }, ['post_id', 'tag_id']); }
+    if (pid && tid) {
+      await guard('post_tags', async () => { await insertRow('post_tags', { post_id: pid, tag_id: tid }, ['post_id', 'tag_id']); });
+    }
   }
   for (const r of T.post_revisions || []) {
     const pid = idMap.get(r.post_id);
-    if (pid) { await insertRow('post_revisions', { ...r, post_id: pid }, ['post_id', 'title', 'content_md', 'note', 'created_at']); report.inserted.revisions = (report.inserted.revisions || 0) + 1; }
+    if (!pid) continue;
+    await guard('post_revisions', async () => {
+      // 历史版本没有可依仗的唯一键：按（文章+时间+标题+正文+备注）查重，重导不重复堆版本
+      const dup = await first(env, 'SELECT id FROM post_revisions WHERE post_id = ? AND created_at = ? AND title = ? AND content_md = ? AND note IS ?', pid, r.created_at, r.title, r.content_md, r.note ?? null);
+      if (!dup) {
+        await insertRow('post_revisions', { ...r, post_id: pid }, ['post_id', 'title', 'content_md', 'note', 'created_at']);
+        report.inserted.revisions = (report.inserted.revisions || 0) + 1;
+      }
+    });
   }
   for (const mo of T.moments || []) {
-    const row = { ...mo };
-    delete row.id; // 说说不强塞旧 id，自增新 id；配图走媒体映射
-    row.media_id = mo.media_id != null ? (mediaMap.get(mo.media_id) ?? null) : null;
-    await insertRow('moments', row, ['content', 'media_id', 'status', 'created_at', 'updated_at']);
-    report.inserted.moments = (report.inserted.moments || 0) + 1;
+    await guard('moments', async () => {
+      const row = { ...mo };
+      delete row.id; // 说说不强塞旧 id，自增新 id；配图走媒体映射
+      row.media_id = mo.media_id != null ? (mediaMap.get(mo.media_id) ?? null) : null;
+      // 说说同样没有唯一键：按（时间+正文+配图+状态）查重，重导不重复发同一条
+      const dup = await first(env, 'SELECT id FROM moments WHERE created_at = ? AND content = ? AND media_id IS ? AND status = ?', mo.created_at, mo.content, row.media_id, mo.status);
+      if (!dup) {
+        await insertRow('moments', row, ['content', 'media_id', 'status', 'created_at', 'updated_at']);
+        report.inserted.moments = (report.inserted.moments || 0) + 1;
+      }
+    });
   }
   // 评论两遍写：第一遍不带旧 id 插入（parent 先置 0）并记映射，
   // 第二遍按映射改写 parent_id。旧版不带 id 插入却原样写旧 parent_id，
@@ -253,36 +294,72 @@ export async function importSite(env, data) {
   for (const c of T.comments || []) {
     const pid = idMap.get(c.post_id);
     if (!pid) continue;
-    const r = await run(env, 'INSERT INTO comments (post_id, parent_id, author_name, author_hash, content, status, is_admin, ip_hash, ua, created_at) VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)',
-      pid, c.author_name, c.author_hash ?? null, c.content, c.status, c.is_admin ?? 0, c.ip_hash ?? null, c.ua ?? null, c.created_at);
-    const newId = r.meta.last_row_id;
-    if (newId) {
-      commentMap.set(c.id, newId);
-      if (c.parent_id) pendingParents.push([newId, c.parent_id]);
-      report.inserted.comments = (report.inserted.comments || 0) + 1;
-    }
+    await guard('comments', async () => {
+      // 评论不带唯一键：按（文章+时间+作者+正文+来源信息）查重，重导认出已导过的
+      // 那条、只补映射不重复插入，回复的父子关系照样能接上
+      const dup = await first(env, 'SELECT id FROM comments WHERE post_id = ? AND created_at = ? AND author_name = ? AND content = ? AND author_hash IS ? AND status = ? AND is_admin = ? AND ip_hash IS ? AND ua IS ?',
+        pid, c.created_at, c.author_name, c.content, c.author_hash ?? null, c.status, c.is_admin ?? 0, c.ip_hash ?? null, c.ua ?? null);
+      if (dup) {
+        commentMap.set(c.id, dup.id);
+        if (c.parent_id) pendingParents.push([dup.id, c.parent_id]);
+        return;
+      }
+      const r = await run(env, 'INSERT INTO comments (post_id, parent_id, author_name, author_hash, content, status, is_admin, ip_hash, ua, created_at) VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)',
+        pid, c.author_name, c.author_hash ?? null, c.content, c.status, c.is_admin ?? 0, c.ip_hash ?? null, c.ua ?? null, c.created_at);
+      const newId = r.meta.last_row_id;
+      if (newId) {
+        commentMap.set(c.id, newId);
+        if (c.parent_id) pendingParents.push([newId, c.parent_id]);
+        report.inserted.comments = (report.inserted.comments || 0) + 1;
+      }
+    });
   }
   for (const [newId, oldParent] of pendingParents) {
     const np = commentMap.get(oldParent);
-    if (np) await run(env, 'UPDATE comments SET parent_id = ? WHERE id = ?', np, newId);
+    if (np) await guard('comments', async () => { await run(env, 'UPDATE comments SET parent_id = ? WHERE id = ?', np, newId); });
   }
-  for (const f of T.friend_links || []) { await insertRow('friend_links', f, ['id', 'name', 'url', 'rss_url', 'avatar_url', 'desc', 'sort_order', 'enabled', 'health', 'fail_streak', 'last_checked_at', 'created_at']); report.inserted.friends = (report.inserted.friends || 0) + 1; }
+  for (const f of T.friend_links || []) {
+    await guard('friend_links', async () => {
+      await insertRow('friend_links', f, ['id', 'name', 'url', 'rss_url', 'avatar_url', 'desc', 'sort_order', 'enabled', 'health', 'fail_streak', 'last_checked_at', 'created_at']);
+      report.inserted.friends = (report.inserted.friends || 0) + 1;
+    });
+  }
   for (const v of T.view_stats || []) {
     const pid = idMap.get(v.post_id);
     if (!pid) continue; // 旧版查不到映射时回退用旧 post_id，会把浏览数记到不相干的文章上
-    await run(env, 'INSERT INTO view_stats (post_id, day, pv) VALUES (?, ?, ?) ON CONFLICT(post_id, day) DO UPDATE SET pv = MAX(pv, excluded.pv)',
-      pid, v.day, v.pv).catch(() => {});
+    await guard('view_stats', async () => {
+      await run(env, 'INSERT INTO view_stats (post_id, day, pv) VALUES (?, ?, ?) ON CONFLICT(post_id, day) DO UPDATE SET pv = MAX(pv, excluded.pv)',
+        pid, v.day, v.pv);
+    });
   }
   // 重定向恢复：EXPORT_TABLES 含 redirects、导出一直带着，旧版导入却从不写回——
   // 改过 slug 的文章在整站恢复后旧链接全部 404，与「旧链接不断」的迁移承诺相悖
   // （2026-11-17 审计核验 #6）。按 idMap 把 post_id 重映射后恢复；映射不到的
   // （文章没导入进来）跳过；与文章导入时冲突改名新登记的跳转可能同 old_slug，
   // insertRow 的 INSERT OR IGNORE 兜底。
+  // 顺序说明：这一段只能放最后——它要用的文章 id 映射（idMap）得等文章全部导完
+  // 才齐。旧版真正的坑不是顺序，是前面任一段裸跑抛错就整场中断、根本走不到这里；
+  // 现在每行都有 guard 兜底，前面的表失败只记账不中断，这一照样会执行到。
   for (const rd of T.redirects || []) {
     const pid = idMap.get(rd.post_id);
     if (!pid) continue;
-    await insertRow('redirects', { old_slug: rd.old_slug, post_id: pid, created_at: rd.created_at }, ['old_slug', 'post_id', 'created_at']);
-    report.inserted.redirects = (report.inserted.redirects || 0) + 1;
+    await guard('redirects', async () => {
+      await insertRow('redirects', { old_slug: rd.old_slug, post_id: pid, created_at: rd.created_at }, ['old_slug', 'post_id', 'created_at']);
+      report.inserted.redirects = (report.inserted.redirects || 0) + 1;
+    });
+  }
+  // 收尾对账：逐表成败摆到报告里。partial=true 就是「没全导完」——但每张表都是
+  // 幂等写，已写部分不会重复，站长修好失败原因后用同一备份直接重导即可补齐，
+  // 不需要先回滚；真要退回导入前状态，导入口已强制先备份，可走备份恢复。
+  report.tables = {};
+  for (const table of EXPORT_TABLES) {
+    if (tableStats[table]) report.tables[table] = tableStats[table];
+  }
+  report.failedTables = EXPORT_TABLES.filter((table) => tableStats[table]?.fail > 0);
+  report.succeededTables = EXPORT_TABLES.filter((table) => tableStats[table] && tableStats[table].fail === 0);
+  report.partial = report.failedTables.length > 0;
+  if (report.partial) {
+    report.note = `导入没有全部完成：${report.failedTables.join('、')} 里有部分数据没写进去（细节看 errors）。已经写好的部分不会重复，直接用同一个备份再导入一次就能补齐；也可以先回滚到导入前的自动备份再重试。`;
   }
   return report;
 }

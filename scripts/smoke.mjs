@@ -483,6 +483,11 @@ const failed = results.filter((r) => !r.pass);
   check('【三批】详情带 has_password 布尔', detailPost && detailPost.has_password === false);
 
   // 缺口 7：评论分页 + 按文章筛选
+  // v1.2.7 起导入改幂等：整站自导入不再复制评论（旧版靠这次复制把已审评论凑到 2 条，
+  // 本检查的 total>1 实际是踩着那个重复导入的副作用）。这里自己补一条已审评论当样本。
+  resp = await req('POST', '/api/comments', { body: { post_id: postId, author_name: '分页样本', content: '评论分页样本第二条' }, headers: { 'X-Requested-With': 'fetch' }, useCookie: false });
+  const cmtPageSample = (await resp.json()).data;
+  resp = await req('POST', `/api/admin/comments/${cmtPageSample.id}/approve`, { body: {}, headers: { 'X-Requested-With': 'fetch' } });
   resp = await req('GET', '/api/admin/comments?status=approved&per=1&page=1');
   const cPage1 = (await resp.json()).data;
   check('【三批】评论分页（per=1 时只回 1 条且 total 更大）', cPage1.comments.length === 1 && cPage1.total > 1 && cPage1.page === 1);
