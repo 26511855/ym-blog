@@ -42,7 +42,7 @@ async function saveRevision(env, post, note) {
 // 引用位共四处：文章正文（含 r2_key）、文章封面 cover_media_id、说说 media_id、头像设置 avatar_media_id——
 // 此前只查正文，只被用作封面/说说图/头像的附件会被算成 0 引用、误删（2026-11-09 审校补齐）。
 async function recountMediaRef(env, mediaRow) {
-  const inPosts = await all(env, "SELECT COUNT(*) AS n FROM posts WHERE status != 'trash' AND content_md LIKE ?", `%${mediaRow.r2_key}%`);
+  const inPosts = await all(env, "SELECT COUNT(*) AS n FROM posts WHERE status != 'trash' AND instr(content_md, ?) > 0", mediaRow.r2_key);
   const asCover = await all(env, "SELECT COUNT(*) AS n FROM posts WHERE status != 'trash' AND cover_media_id = ?", mediaRow.id);
   const inMoments = await all(env, "SELECT COUNT(*) AS n FROM moments WHERE status != 'trash' AND media_id = ?", mediaRow.id);
   const settings = await getSettings(env);
@@ -412,7 +412,7 @@ export async function handleAdminApi(env, request, method, path, url) {
       if (row.status !== 'trashed') throw badRequest('彻底删除只对回收站里的文件可用，请先移入回收站');
       const refs = await recountMediaRef(env, row);
       if (refs > 0 && url.searchParams.get('force') !== '1') {
-        const usedBy = await all(env, "SELECT title FROM posts WHERE status != 'trash' AND content_md LIKE ? LIMIT 5", `%${row.r2_key}%`);
+        const usedBy = await all(env, "SELECT title FROM posts WHERE status != 'trash' AND instr(content_md, ?) > 0 LIMIT 5", row.r2_key);
         throw new HttpError('in_use', `该文件正被 ${refs} 篇文章引用（${usedBy.map((x) => x.title).join('、')}），确认要删请带 force=1`, 409);
       }
       // 删对象成功才删行（中9）：对象删失败就保留行，下次还能重试，不留无行可查的孤儿对象
@@ -425,7 +425,7 @@ export async function handleAdminApi(env, request, method, path, url) {
     }
     const refs = await recountMediaRef(env, row);
     if (refs > 0 && url.searchParams.get('force') !== '1') {
-      const usedBy = await all(env, "SELECT title FROM posts WHERE status != 'trash' AND content_md LIKE ? LIMIT 5", `%${row.r2_key}%`);
+      const usedBy = await all(env, "SELECT title FROM posts WHERE status != 'trash' AND instr(content_md, ?) > 0 LIMIT 5", row.r2_key);
       // refs 的口径是四处引用合计（正文/封面/说说/头像），文案别只说「篇文章」
       throw new HttpError('in_use', `该文件正被引用 ${refs} 处（正文/封面/说说/头像合计${usedBy.length ? `，如文章：${usedBy.map((x) => x.title).join('、')}` : ''}），确认要删请带 force=1`, 409);
     }
